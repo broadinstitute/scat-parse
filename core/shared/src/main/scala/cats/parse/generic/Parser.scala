@@ -22,8 +22,9 @@
 package cats.parse.generic
 
 import cats.{Align, Alternative, Defer, Eval, FlatMap, Functor, FunctorFilter, Monad, MonoidK, Now}
-import cats.data.{Chain, Ior, NonEmptyList}
-import cats.parse.{Accumulator, Accumulator0, Appender, LocationMap}
+import cats.data.{AndThen, Chain, Ior, NonEmptyList}
+import cats.syntax.traverse._
+import cats.parse.{Accumulator, Accumulator0, Appender, Caret, LocationMap}
 
 import scala.annotation.tailrec
 import scala.collection.immutable.SortedSet
@@ -33,9 +34,9 @@ import scala.collection.immutable.SortedSet
   *
   * This is the generic form of `cats.parse.Parser0`: one added type parameter, the same
   * epsilon/arresting failure semantics. `Parser0[String, A]` instantiated at [[StringAlphabet]] is
-  * the char parser.
+  * the char parser, which `cats.parse.Parser0` is an alias for.
   */
-sealed abstract class Parser0[S, +A] {
+sealed abstract class Parser0[S, +A] { self: Product =>
 
   /** Attempt to parse an `A` out of `input`.
     *
@@ -70,19 +71,19 @@ sealed abstract class Parser0[S, +A] {
 
   /** @return a parser that applies `fn` to this parser's result */
   def map[B](fn: A => B): Parser0[S, B] =
-    Parser.Impl.Map0(this, fn)
+    Parser.map0(this)(fn)
 
   /** @return a parser that runs the parser `fn` builds from this parser's result */
   def flatMap[B](fn: A => Parser0[S, B]): Parser0[S, B] =
-    Parser.Impl.FlatMap0(this, fn)
+    Parser.flatMap0(this)(fn)
 
   /** @return a parser running `that` after this one, pairing both results */
   def ~[B](that: Parser0[S, B]): Parser0[S, (A, B)] =
-    Parser.Impl.Prod0(this, that)
+    Parser.product0(this, that)
 
   /** @return a parser running this one and discarding its result */
   def void: Parser0[S, Unit] =
-    Parser.Impl.Void0(this)
+    Parser.void0(this)
 
   /** Capture the input this parser consumed as the alphabet's [[Alphabet.Slice]]. This is the
     * generic form of char's `.string`: the char instance fixes `Slice = String`, so char captures
@@ -92,14 +93,14 @@ sealed abstract class Parser0[S, +A] {
     *   a parser returning the consumed input in place of this parser's result
     */
   def slice(implicit alpha: Alphabet[S]): Parser0[S, alpha.Slice] =
-    Parser.Impl.SliceP0[S, A, alpha.Slice](alpha, this)
+    Parser.slice0(alpha)(this)
 
   /** @return
     *   a parser that rewinds the offset to where it started when this one fails, turning an
     *   arresting failure into an epsilon failure
     */
   def backtrack: Parser0[S, A] =
-    Parser.Impl.Backtrack0(this)
+    Parser.backtrack0(this)
 
   /** Convert epsilon failures into `None`, wrapping other results in `Some`. A failure that
     * consumed input still fails.
@@ -108,7 +109,7 @@ sealed abstract class Parser0[S, +A] {
     *   a parser that never fails on an epsilon failure of this one
     */
   def ? : Parser0[S, Option[A]] =
-    Parser.oneOf0(map(Some(_): Option[A]) :: Parser.optTail[S, A])
+    Parser.oneOf0(Parser.map0(this)(Some(_): Option[A]) :: Parser.optTail[S, A])
 
   /** This is the generic form of char's `eitherOr`: `pb` is tried only on an epsilon failure of
     * this parser.
@@ -127,7 +128,7 @@ sealed abstract class Parser0[S, +A] {
     *   [[Alphabet.Slice]]
     */
   def withSlice(implicit alpha: Alphabet[S]): Parser0[S, (A, alpha.Slice)] =
-    Parser.Impl.WithSliceP0[S, A, alpha.Slice](alpha, this)
+    Parser.withSlice0(alpha)(this)
 
   /** @return a parser running this one then `that`, keeping only `that`'s result */
   def *>[B](that: Parser0[S, B]): Parser0[S, B] =
@@ -173,7 +174,7 @@ sealed abstract class Parser0[S, +A] {
 
   /** @return a parser replacing this one's result with `b` */
   def as[B](b: B): Parser0[S, B] =
-    void.map(_ => b)
+    Parser.as0(this, b)
 
   /** Wrap this parser to enable composition (`~`, `*>`, `<*`) with a [[Parser]], refining the
     * result to a [[Parser]].
@@ -221,6 +222,11 @@ sealed abstract class Parser0[S, +A] {
     */
   private[parse] def parseMut(state: Parser.State[S]): A
 
+  /** This method overrides `Object#hashCode` to cache its result for performance reasons: the
+    * construction-time optimizer compares and dedups whole parser trees.
+    */
+  override lazy val hashCode: Int = scala.runtime.ScalaRunTime._hashCode(this)
+
   private def unifyErrors(
       err: Eval[Chain[Expectation[S]]]
   )(implicit alpha: Alphabet[S]): NonEmptyList[Expectation[S]] =
@@ -228,32 +234,32 @@ sealed abstract class Parser0[S, +A] {
 }
 
 /** A [[Parser0]] that always consumes at least one token when it succeeds. */
-sealed abstract class Parser[S, +A] extends Parser0[S, A] {
+sealed abstract class Parser[S, +A] extends Parser0[S, A] { self: Product =>
 
   override def map[B](fn: A => B): Parser[S, B] =
-    Parser.Impl.Map(this, fn)
+    Parser.map(this)(fn)
 
   override def flatMap[B](fn: A => Parser0[S, B]): Parser[S, B] =
-    Parser.Impl.FlatMap(this, fn)
+    Parser.flatMap10(this)(fn)
 
   override def ~[B](that: Parser0[S, B]): Parser[S, (A, B)] =
-    Parser.Impl.Prod(this, that)
+    Parser.product10(this, that)
 
   override def void: Parser[S, Unit] =
-    Parser.Impl.Void(this)
+    Parser.void(this)
 
   override def slice(implicit alpha: Alphabet[S]): Parser[S, alpha.Slice] =
-    Parser.Impl.SliceP[S, A, alpha.Slice](alpha, this)
+    Parser.slice(alpha)(this)
 
   override def backtrack: Parser[S, A] =
-    Parser.Impl.Backtrack(this)
+    Parser.backtrack(this)
 
   /** a version of [[Parser0.eitherOr]] when both sides are known to consume input */
   def eitherOr[B](pb: Parser[S, B]): Parser[S, Either[B, A]] =
     Parser.eitherOr(this, pb)
 
   override def withSlice(implicit alpha: Alphabet[S]): Parser[S, (A, alpha.Slice)] =
-    Parser.Impl.WithSliceP[S, A, alpha.Slice](alpha, this)
+    Parser.withSlice(alpha)(this)
 
   override def *>[B](that: Parser0[S, B]): Parser[S, B] =
     (void ~ that).map(_._2)
@@ -291,7 +297,7 @@ sealed abstract class Parser[S, +A] extends Parser0[S, A] {
   }
 
   override def as[B](b: B): Parser[S, B] =
-    void.map(_ => b)
+    Parser.as(this, b)
 
   override def soft: Parser.Soft[S, A] =
     new Parser.Soft(this)
@@ -420,6 +426,13 @@ object Parser {
   /** @return a parser consuming nothing and always succeeding with `a` */
   def pure[S, A](a: A): Parser0[S, A] =
     Impl.Pure(a)
+
+  /** the parser that consumes nothing and succeeds with unit — one shared node per build, so the
+    * normalizer can recognize it by reference (`eq`) the way char's `Parser.unit` is recognized.
+    */
+  def unit[S]: Parser0[S, Unit] = unitAny.asInstanceOf[Parser0[S, Unit]]
+
+  private[this] val unitAny: Parser0[Any, Unit] = Impl.Pure(())
 
   /** Match the literal `lit`, which must be non-empty.
     *
@@ -568,6 +581,59 @@ object Parser {
   def defer0[S, A](pa: => Parser0[S, A]): Parser0[S, A] =
     Impl.Defer0(() => pa)
 
+  /** @return a parser running `first` then `second`, pairing both results */
+  def product0[S, A, B](first: Parser0[S, A], second: Parser0[S, B]): Parser0[S, (A, B)] =
+    first match {
+      case f1: Parser[S, A] => product10(f1, second)
+      case Impl.Pure(a) => second.map(Impl.ToTupleWith1(a))
+      case _ =>
+        second match {
+          case s1: Parser[S, B] => product01(first, s1)
+          case Impl.Pure(b) => first.map(Impl.ToTupleWith2(b))
+          case _ => Impl.Prod0(first, second)
+        }
+    }
+
+  /** the [[product0]] with `first` known to consume input */
+  def product10[S, A, B](first: Parser[S, A], second: Parser0[S, B]): Parser[S, (A, B)] =
+    first match {
+      case f @ Impl.Fail() => f.widen
+      case f @ Impl.FailWith(_) => f.widen
+      case _ =>
+        second match {
+          case Impl.Pure(b) => first.map(Impl.ToTupleWith2(b))
+          case _ => Impl.Prod(first, second)
+        }
+    }
+
+  /** the [[product0]] with `second` known to consume input */
+  def product01[S, A, B](first: Parser0[S, A], second: Parser[S, B]): Parser[S, (A, B)] =
+    first match {
+      case p1: Parser[S, A] => product10(p1, second)
+      case Impl.Pure(a) => second.map(Impl.ToTupleWith1(a))
+      case Impl.OneOf0(items) =>
+        val lst = items.last
+        if (Impl.alwaysSucceeds(lst)) {
+          // (a1 + a0) * b = a1 * b + a0 * b
+          // A trailing always-succeeding alternative -- what `.?` builds, and common -- would
+          // otherwise hide the valid expectations of the alternatives before it (issue #382).
+          product01(Impl.cheapOneOf0(items.init), second) |
+            product01(lst, second)
+        } else Impl.Prod(first, second)
+      case Impl.Map0(f0, fn) =>
+        // Make sure Map doesn't hide the above optimization
+        product01(f0, second).map(Impl.Map1Fn(fn))
+      case prod0: Impl.Prod0[S, a, b]
+          if prod0.second.isInstanceOf[Impl.OneOf0[_, _]] ||
+            prod0.second.isInstanceOf[Impl.Map0[_, _, _]] ||
+            prod0.second.isInstanceOf[Impl.Prod0[_, _, _]] =>
+        // Make sure Prod doesn't hide the above optimization
+        // ((a, b), c) == (a, (b, c)).map(Impl.RotateRight)
+        product01[S, a, (b, B)](prod0.first, product01(prod0.second, second))
+          .map(Impl.RotateRight[a, b, B]())
+      case _ => Impl.Prod(first, second)
+    }
+
   /** Run `second` after `first`, but rewind to the start when `second` fails without having
     * consumed input: the pair is attempted as one unit, so an alternation can still try something
     * else.
@@ -576,15 +642,42 @@ object Parser {
     *   the soft product of `first` and `second`
     */
   def softProduct0[S, A, B](first: Parser0[S, A], second: Parser0[S, B]): Parser0[S, (A, B)] =
-    Impl.SoftProd0(first, second)
+    first match {
+      case f1: Parser[S, A] => softProduct10(f1, second)
+      case Impl.Pure(a) => second.map(Impl.ToTupleWith1(a))
+      case _ =>
+        second match {
+          case s1: Parser[S, B] => softProduct01(first, s1)
+          case Impl.Pure(b) => first.map(Impl.ToTupleWith2(b))
+          case _ => Impl.SoftProd0(first, second)
+        }
+    }
 
   /** @return the [[softProduct0]] of a `Parser` and a `Parser0`, which consumes input */
   def softProduct10[S, A, B](first: Parser[S, A], second: Parser0[S, B]): Parser[S, (A, B)] =
-    Impl.SoftProd(first, second)
+    first match {
+      case f @ Impl.Fail() => f.widen
+      case f @ Impl.FailWith(_) => f.widen
+      case _ =>
+        second match {
+          case Impl.Pure(b) => first.map(Impl.ToTupleWith2(b))
+          case _ => Impl.SoftProd(first, second)
+        }
+    }
 
   /** @return the [[softProduct0]] of a `Parser0` and a `Parser`, which consumes input */
   def softProduct01[S, A, B](first: Parser0[S, A], second: Parser[S, B]): Parser[S, (A, B)] =
-    Impl.SoftProd(first, second)
+    first match {
+      case f @ Impl.Fail() => f.widen
+      case f @ Impl.FailWith(_) => f.widen
+      case Impl.Pure(a) => second.map(Impl.ToTupleWith1(a))
+      /* The OneOf0 lifting product01 does is not lawful for soft products:
+          val p3 = length(1).?.soft ~ length(2)
+          val p4 = (length(1).soft ~ length(2)) | length(2)
+         p3.parse("ab") fails (the `.?` consumes one token, then length(2) cannot succeed), while
+         p4.parse("ab") succeeds (the soft product rewinds, then length(2) matches). */
+      case _ => Impl.SoftProd(first, second)
+    }
 
   /** @return a parser repeating `p1` at least `min` (which must be `>= 1`) times */
   def repAs[S, A, B](p1: Parser[S, A], min: Int)(implicit acc: Accumulator[A, B]): Parser[S, B] = {
@@ -636,12 +729,22 @@ object Parser {
     * @return
     *   the left-biased alternation of `parsers`
     */
-  def oneOf[S, A](parsers: List[Parser[S, A]]): Parser[S, A] =
-    Optimizer.oneOfInternal(parsers)
+  def oneOf[S, A](parsers: List[Parser[S, A]]): Parser[S, A] = {
+    val res = Optimizer.oneOfInternal(parsers)
+    Impl.hasKnownResult(res) match {
+      case Some(a) => res.as(a)
+      case None => res
+    }
+  }
 
   /** @return the left-biased alternation of `parsers`, which may consume no input */
-  def oneOf0[S, A](parsers: List[Parser0[S, A]]): Parser0[S, A] =
-    Optimizer.oneOf0Internal(parsers)
+  def oneOf0[S, A](parsers: List[Parser0[S, A]]): Parser0[S, A] = {
+    val res = Optimizer.oneOf0Internal(parsers)
+    Impl.hasKnownResult(res) match {
+      case Some(a) => res.as(a)
+      case None => res
+    }
+  }
 
   /** @return
     *   `Right` from `first` on success, `Left` from `second` on an epsilon failure of `first`
@@ -653,26 +756,36 @@ object Parser {
   def eitherOr[S, A, B](first: Parser[S, B], second: Parser[S, A]): Parser[S, Either[A, B]] =
     oneOf(first.map(Right(_)) :: second.map(Left(_)) :: Nil)
 
-  /** @return a parser running `first` then `second`, pairing both results */
-  def product0[S, A, B](first: Parser0[S, A], second: Parser0[S, B]): Parser0[S, (A, B)] =
-    first match {
-      case f1: Parser[S, A] => product10(f1, second)
+  /** @return a parser applying `fn` to `p`'s result */
+  def map0[S, A, B](p: Parser0[S, A])(fn: A => B): Parser0[S, B] =
+    p match {
+      case p1: Parser[S, A] => map(p1)(fn)
       case _ =>
-        second match {
-          case s1: Parser[S, B] => product01(first, s1)
-          case _ => Impl.Prod0(first, second)
+        Impl.hasKnownResult(p) match {
+          case Some(a) => p.as(fn(a))
+          case None =>
+            p match {
+              case Impl.Map0(p0, f0) =>
+                // reassociate in the function, not the parser, so we can quickly check if we match
+                Impl.Map0(p0, AndThen(f0).andThen(fn))
+              case _ => Impl.Map0(p, fn)
+            }
         }
     }
 
-  /** the [[product0]] with `first` known to consume input */
-  def product10[S, A, B](first: Parser[S, A], second: Parser0[S, B]): Parser[S, (A, B)] =
-    Impl.Prod(first, second)
-
-  /** the [[product0]] with `second` known to consume input */
-  def product01[S, A, B](first: Parser0[S, A], second: Parser[S, B]): Parser[S, (A, B)] =
-    first match {
-      case p1: Parser[S, A] => product10(p1, second)
-      case _ => Impl.Prod(first, second)
+  /** the [[map0]] with `p` known to consume input */
+  def map[S, A, B](p: Parser[S, A])(fn: A => B): Parser[S, B] =
+    Impl.hasKnownResult(p) match {
+      case Some(a) => p.as(fn(a))
+      case None =>
+        p match {
+          case f @ Impl.Fail() => f.widen
+          case f @ Impl.FailWith(_) => f.widen
+          case Impl.Map(p0, f0) =>
+            // reassociate in the function, not the parser, so we can quickly check if we match
+            Impl.Map(p0, AndThen(f0).andThen(fn))
+          case _ => Impl.Map(p, fn)
+        }
     }
 
   /** Parse `p` and, on `Left`, run the parser `fn` builds to complete the value — more efficient
@@ -682,38 +795,64 @@ object Parser {
     *   a parser resolving `p`'s `Left` case through `fn`, passing `Right` through unchanged
     */
   def select0[S, A, B](p: Parser0[S, Either[A, B]])(fn: Parser0[S, A => B]): Parser0[S, B] =
-    Impl
-      .Select0(p, fn)
-      .map {
-        case Left((a, f)) => f(a)
-        case Right(b) => b
-      }
+    Impl.hasKnownResult(p) match {
+      case Some(Right(b)) => p.as(b)
+      case Some(Left(a)) => p *> fn.map(_(a))
+      case None =>
+        Impl
+          .Select0(p, fn)
+          .map {
+            case Left((a, f)) => f(a)
+            case Right(b) => b
+          }
+    }
 
   /** the [[select0]] with `p` known to consume input */
   def select[S, A, B](p: Parser[S, Either[A, B]])(fn: Parser0[S, A => B]): Parser[S, B] =
-    Impl
-      .Select(p, fn)
-      .map {
-        case Left((a, f)) => f(a)
-        case Right(b) => b
-      }
+    Impl.hasKnownResult(p) match {
+      case Some(Right(b)) => p.as(b)
+      case Some(Left(a)) => p *> fn.map(_(a))
+      case None =>
+        Impl
+          .Select(p, fn)
+          .map {
+            case Left((a, f)) => f(a)
+            case Right(b) => b
+          }
+    }
 
   /** @return a parser dynamically constructing the next parser from `pa`'s result via `fn` */
   def flatMap0[S, A, B](pa: Parser0[S, A])(fn: A => Parser0[S, B]): Parser0[S, B] =
     pa match {
       case p: Parser[S, A] => flatMap10(p)(fn)
-      case _ => Impl.FlatMap0(pa, fn)
+      case _ =>
+        Impl.hasKnownResult(pa) match {
+          case Some(a) => pa *> fn(a)
+          case None => Impl.FlatMap0(pa, fn)
+        }
     }
 
   /** the [[flatMap0]] with `pa` known to consume input */
   def flatMap10[S, A, B](pa: Parser[S, A])(fn: A => Parser0[S, B]): Parser[S, B] =
-    Impl.FlatMap(pa, fn)
+    pa match {
+      case f @ Impl.Fail() => f.widen
+      case f @ Impl.FailWith(_) => f.widen
+      case _ =>
+        Impl.hasKnownResult(pa) match {
+          case Some(a) => pa *> fn(a)
+          case None => Impl.FlatMap(pa, fn)
+        }
+    }
 
   /** the [[flatMap0]] with `fn`'s result known to consume input */
   def flatMap01[S, A, B](pa: Parser0[S, A])(fn: A => Parser[S, B]): Parser[S, B] =
     pa match {
       case p: Parser[S, A] => flatMap10(p)(fn)
-      case _ => Impl.FlatMap(pa, fn)
+      case _ =>
+        Impl.hasKnownResult(pa) match {
+          case Some(a) => pa.with1 *> fn(a)
+          case None => Impl.FlatMap(pa, fn)
+        }
     }
 
   /** @return a parser tail-recursively applying `fn` from `init` until it returns `Right` */
@@ -757,16 +896,106 @@ object Parser {
     hasA | onlyB
   }
 
+  /** @return a parser running `pa` and discarding its result */
+  def void0[S](pa: Parser0[S, Any]): Parser0[S, Unit] =
+    pa match {
+      case p1: Parser[S, Any] => void(p1)
+      case s if Impl.alwaysSucceeds(s) => unit
+      case v @ Impl.Void0(_) => v
+      case _ =>
+        val unmapped = Impl.unmap0(pa)
+        // normalization can expose that a parser always succeeds consuming nothing even when the
+        // pre-normalization shape didn't say so (`Backtrack0(Prod0(index, index))`, say). Answering
+        // `unit` for those keeps `void0` idempotent: without it `p.void` would be a wrapper whose
+        // own `.void` collapses further, and `p.void.void != p.void`.
+        if (Impl.alwaysSucceeds(unmapped)) unit
+        else if (Impl.isVoided(unmapped)) unmapped.asInstanceOf[Parser0[S, Unit]]
+        else Impl.Void0(unmapped)
+    }
+
+  /** the [[void0]] with `pa` known to consume input */
+  def void[S](pa: Parser[S, Any]): Parser[S, Unit] =
+    pa match {
+      case v @ Impl.Void(_) => v
+      case _ =>
+        Impl.unmap(pa) match {
+          case f @ Impl.Fail() => f.widen
+          case f @ Impl.FailWith(_) => f.widen
+          case notVoid =>
+            if (Impl.isVoided(notVoid)) notVoid.asInstanceOf[Parser[S, Unit]]
+            else Impl.Void(notVoid)
+        }
+    }
+
+  /** @return a parser discarding `pa`'s result and capturing the input it consumed instead */
+  def slice0[S](alpha: Alphabet[S])(pa: Parser0[S, Any]): Parser0[S, alpha.Slice] =
+    pa match {
+      case s1: Parser[S, Any] => slice(alpha)(s1)
+      case sl if Impl.matchesSlice(alpha)(sl) => sl.asInstanceOf[Parser0[S, alpha.Slice]]
+      case _ =>
+        Impl.unmap0(pa) match {
+          case Impl.Pure(_) => Impl.EmptySlice[S, alpha.Slice](alpha)
+          case notEmpty => Impl.SliceP0[S, Any, alpha.Slice](alpha, notEmpty)
+        }
+    }
+
+  /** the [[slice0]] with `pa` known to consume input */
+  def slice[S](alpha: Alphabet[S])(pa: Parser[S, Any]): Parser[S, alpha.Slice] =
+    pa match {
+      case sl if Impl.matchesSlice(alpha)(sl) => sl.asInstanceOf[Parser[S, alpha.Slice]]
+      case _ =>
+        Impl.unmap(pa) match {
+          case si @ Impl.SeqIn(_, _) => si.asInstanceOf[Parser[S, alpha.Slice]]
+          case len @ Impl.Length(_, _) => len.asInstanceOf[Parser[S, alpha.Slice]]
+          case tw @ Impl.TokensWhile(_, _) => tw.asInstanceOf[Parser[S, alpha.Slice]]
+          case f @ Impl.Fail() => f.widen
+          case f @ Impl.FailWith(_) => f.widen
+          case notSlice =>
+            // a literal whose match is exactly itself captures a value we can allocate once, here
+            Impl.constantSliceOf(alpha)(notSlice) match {
+              case Some(known) => Impl.Map(notSlice, Impl.ConstFn(known))
+              case None => Impl.SliceP[S, Any, alpha.Slice](alpha, notSlice)
+            }
+        }
+    }
+
+  /** @return a parser returning both `pa`'s result and the input it consumed */
+  def withSlice0[S, A](alpha: Alphabet[S])(pa: Parser0[S, A]): Parser0[S, (A, alpha.Slice)] =
+    pa match {
+      case p1: Parser[S, A] => withSlice(alpha)(p1)
+      case sl if Impl.matchesSlice(alpha)(sl) =>
+        sl.map(Impl.FanOut[A]()).asInstanceOf[Parser0[S, (A, alpha.Slice)]]
+      case notSlice => Impl.WithSliceP0[S, A, alpha.Slice](alpha, notSlice)
+    }
+
+  /** the [[withSlice0]] with `pa` known to consume input */
+  def withSlice[S, A](alpha: Alphabet[S])(pa: Parser[S, A]): Parser[S, (A, alpha.Slice)] =
+    pa match {
+      case f @ Impl.Fail() => f.widen
+      case f @ Impl.FailWith(_) => f.widen
+      case sl if Impl.matchesSlice(alpha)(sl) =>
+        sl.map(Impl.FanOut[A]()).asInstanceOf[Parser[S, (A, alpha.Slice)]]
+      case notSlice => Impl.WithSliceP[S, A, alpha.Slice](alpha, notSlice)
+    }
+
   /** @return
     *   a parser succeeding, consuming nothing, exactly when `pa` would fail; on success, its
     *   [[Expectation.ExpectedFailureAt]] carries the input `pa` unexpectedly matched
     */
   def not[S, A](pa: Parser0[S, A])(implicit alpha: Alphabet[S]): Parser0[S, Unit] =
-    Impl.Not(alpha, pa.void)
+    void0(pa) match {
+      case Impl.Fail() | Impl.FailWith(_) => unit
+      case u if Impl.alwaysSucceeds(u) => Impl.Fail()
+      case notFail => Impl.Not(alpha, notFail)
+    }
 
   /** @return a parser succeeding, consuming nothing, exactly when `pa` would succeed */
   def peek[S, A](pa: Parser0[S, A]): Parser0[S, Unit] =
-    Impl.Peek(pa.void)
+    pa match {
+      case p @ Impl.Peek(_) => p
+      case s if Impl.alwaysSucceeds(s) => unit
+      case notPeek => Impl.Peek(void0(notPeek))
+    }
 
   /** @return a parser consuming zero or more tokens as long as they don't match `p`, as a slice */
   def until0[S, A](alpha: Alphabet[S])(p: Parser0[S, Any]): Parser0[S, alpha.Slice] =
@@ -802,21 +1031,71 @@ object Parser {
   ): Parser[S, B] =
     (not(end).with1 *> p).repAs
 
+  /** @return a parser rewinding the offset when `pa` fails, so an alternation can try elsewhere */
+  def backtrack0[S, A](pa: Parser0[S, A]): Parser0[S, A] =
+    pa match {
+      case p1: Parser[S, A] => backtrack(p1)
+      case bt if Impl.doesBacktrack(bt) => bt
+      case Impl.Void0(b) => Impl.Void0(Impl.Backtrack0(b)).asInstanceOf[Parser0[S, A]]
+      case nbt => Impl.Backtrack0(nbt)
+    }
+
+  /** the [[backtrack0]] with `pa` known to consume input */
+  def backtrack[S, A](pa: Parser[S, A]): Parser[S, A] =
+    pa match {
+      case bt if Impl.doesBacktrack(bt) => bt
+      case Impl.Void(b) => Impl.Void(Impl.Backtrack(b)).asInstanceOf[Parser[S, A]]
+      case nbt => Impl.Backtrack(nbt)
+    }
+
   /** @return a parser replacing `pa`'s result with `b` */
   def as0[S, B](pa: Parser0[S, Any], b: B): Parser0[S, B] =
-    pa.void.map(_ => b)
+    pa match {
+      case p: Parser[S, Any] => as(p, b)
+      case _ =>
+        val voided = void0(pa)
+        // void cannot make a Parser0 a Parser; if b is (), as in foo.as(()), voided is the answer
+        if (Impl.isUnit(b)) voided.asInstanceOf[Parser0[S, B]]
+        else if (Impl.alwaysSucceeds(voided)) pure(b)
+        else Impl.Map0(voided, Impl.ConstFn(b))
+    }
 
   /** the [[as0]] with `pa` known to consume input */
-  def as[S, B](pa: Parser[S, Any], b: B): Parser[S, B] =
-    pa.void.map(_ => b)
+  def as[S, B](pa: Parser[S, Any], b: B): Parser[S, B] = {
+    val v = void(pa)
+    // if b is (), such as foo.as(()), we can just return v
+    if (Impl.isUnit(b)) v.asInstanceOf[Parser[S, B]]
+    else
+      v match {
+        case Impl.Void(ti @ Impl.TokenIn(alpha, set)) =>
+          // a single-token set is cheap and always returns its own token even when voided, so
+          // there is no need to keep the Void wrapper around it
+          alpha.singletonLiteralOf(set.asInstanceOf[alpha.TokenSet]) match {
+            case Some(lit) if Impl.sameValueAndType(b, alpha.tokenAt(lit, 0)) =>
+              ti.asInstanceOf[Parser[S, B]]
+            case Some(_) => Impl.Map(ti, Impl.ConstFn(b))
+            case None => Impl.Map(v, Impl.ConstFn(b))
+          }
+        case f @ Impl.Fail() => f.widen
+        case f @ Impl.FailWith(_) => f.widen
+        case voided => Impl.Map(voided, Impl.ConstFn(b))
+      }
+  }
 
   /** @return a parser adding `ctx` to the context of any failure of `p0` */
   def withContext0[S, A](p0: Parser0[S, A], ctx: String): Parser0[S, A] =
-    Impl.WithContextP0(ctx, p0)
+    p0 match {
+      case Impl.Void0(p) => Impl.Void0(withContext0(p, ctx)).asInstanceOf[Parser0[S, A]]
+      case _ if Impl.alwaysSucceeds(p0) => p0
+      case _ => Impl.WithContextP0(ctx, p0)
+    }
 
   /** the [[withContext0]] with `p` known to consume input */
   def withContext[S, A](p: Parser[S, A], ctx: String): Parser[S, A] =
-    Impl.WithContextP(ctx, p)
+    p match {
+      case Impl.Void(under) => Impl.Void(withContext(under, ctx)).asInstanceOf[Parser[S, A]]
+      case _ => Impl.WithContextP(ctx, p)
+    }
 
   /** @return a parser repeating `p` exactly `times` (which must be `>= 1`) times */
   def repExactlyAs[S, A, B](p: Parser[S, A], times: Int)(implicit
@@ -1005,8 +1284,8 @@ object Parser {
   final class With1[S, +A](val parser: Parser0[S, A]) extends AnyVal {
     def ~[B](that: Parser[S, B]): Parser[S, (A, B)] = product01(parser, that)
     def flatMap[B](fn: A => Parser[S, B]): Parser[S, B] = flatMap01(parser)(fn)
-    def *>[B](that: Parser[S, B]): Parser[S, B] = product01(parser.void, that).map(_._2)
-    def <*[B](that: Parser[S, B]): Parser[S, A] = product01(parser, that.void).map(_._1)
+    def *>[B](that: Parser[S, B]): Parser[S, B] = product01(void0(parser), that).map(_._2)
+    def <*[B](that: Parser[S, B]): Parser[S, A] = product01(parser, void(that)).map(_._1)
     def soft: Soft01[S, A] = new Soft01(parser)
     def between(b: Parser[S, Any], c: Parser[S, Any]): Parser[S, A] =
       (b.void ~ (parser ~ c.void)).map { case (_, (a, _)) => a }
@@ -1018,8 +1297,8 @@ object Parser {
     */
   sealed class Soft0[S, +A](parser: Parser0[S, A]) {
     def ~[B](that: Parser0[S, B]): Parser0[S, (A, B)] = softProduct0(parser, that)
-    def *>[B](that: Parser0[S, B]): Parser0[S, B] = softProduct0(parser.void, that).map(_._2)
-    def <*[B](that: Parser0[S, B]): Parser0[S, A] = softProduct0(parser, that.void).map(_._1)
+    def *>[B](that: Parser0[S, B]): Parser0[S, B] = softProduct0(void0(parser), that).map(_._2)
+    def <*[B](that: Parser0[S, B]): Parser0[S, A] = softProduct0(parser, void0(that)).map(_._1)
     def with1: Soft01[S, A] = new Soft01(parser)
     def between(b: Parser0[S, Any], c: Parser0[S, Any]): Parser0[S, A] =
       (b.void.soft ~ (parser.soft ~ c.void)).map { case (_, (a, _)) => a }
@@ -1030,9 +1309,9 @@ object Parser {
   final class Soft[S, +A](parser: Parser[S, A]) extends Soft0[S, A](parser) {
     override def ~[B](that: Parser0[S, B]): Parser[S, (A, B)] = softProduct10(parser, that)
     override def *>[B](that: Parser0[S, B]): Parser[S, B] =
-      softProduct10(parser.void, that).map(_._2)
+      softProduct10(void(parser), that).map(_._2)
     override def <*[B](that: Parser0[S, B]): Parser[S, A] =
-      softProduct10(parser, that.void).map(_._1)
+      softProduct10(parser, void0(that)).map(_._1)
     override def between(b: Parser0[S, Any], c: Parser0[S, Any]): Parser[S, A] =
       (b.void.with1.soft ~ (parser.soft ~ c.void)).map { case (_, (a, _)) => a }
     override def surroundedBy(b: Parser0[S, Any]): Parser[S, A] = between(b, b)
@@ -1041,46 +1320,487 @@ object Parser {
   /** the [[Soft0]] with the right-hand parser known to consume input */
   final class Soft01[S, +A](val parser: Parser0[S, A]) extends AnyVal {
     def ~[B](that: Parser[S, B]): Parser[S, (A, B)] = softProduct01(parser, that)
-    def *>[B](that: Parser[S, B]): Parser[S, B] = softProduct01(parser.void, that).map(_._2)
-    def <*[B](that: Parser[S, B]): Parser[S, A] = softProduct01(parser, that.void).map(_._1)
+    def *>[B](that: Parser[S, B]): Parser[S, B] = softProduct01(void0(parser), that).map(_._2)
+    def <*[B](that: Parser[S, B]): Parser[S, A] = softProduct01(parser, void(that)).map(_._1)
     def between(b: Parser[S, Any], c: Parser[S, Any]): Parser[S, A] =
       (b.void.soft ~ (parser.soft ~ c.void)).map { case (_, (a, _)) => a }
     def surroundedBy(b: Parser[S, Any]): Parser[S, A] = between(b, b)
   }
 
-  /** the fixed `List(pure(None))` tail of [[Parser0.?]], typed per `S`/`A` (an `Option[Nothing]`
-    * singleton the way char's does isn't possible here: nothing about `Pure` depends on `A`, but a
-    * covariant `Nothing` element can't be shared across every `A` and `S` without a cast).
+  /** the fixed `List(pure(None))` tail of [[Parser0.?]] — one shared node, cast per use as [[unit]]
+    * is.
     */
-  private[generic] def optTail[S, A]: List[Parser0[S, Option[A]]] =
-    pure[S, Option[A]](None) :: Nil
+  private[parse] def optTail[S, A]: List[Parser0[S, Option[A]]] =
+    optTailAny.asInstanceOf[List[Parser0[S, Option[A]]]]
+
+  private[this] val optTailAny: List[Parser0[Any, Option[Any]]] =
+    Impl.Pure[Any, Option[Any]](None) :: Nil
 
   /** The mutable state threaded through a parse: input, offset, error and whether values are being
     * captured. It knows nothing of the [[Alphabet]] — every leaf carries its own from construction.
     *
     * This is protected rather than private to avoid a warning on 2.12
     */
-  protected[parse] final class State[S](val input: S, locationMapThunk: () => Option[LocationMap]) {
-
-    def this(input: S) = this(input, State.noLocationMap)
+  protected[parse] final class State[S](val input: S) {
 
     var offset: Int = 0
     var error: Eval[Chain[Expectation[S]]] = null
     var capture: Boolean = true
 
-    /** Lazy so that a parse which never asks for a caret never builds it. Its reader will be the
-      * char-only `GetCaret` leaf; generic entry points supply no thunk and leave this empty.
+    /** The per-parse memo slot for the char-only `GetCaret` leaf, which is this field's only reader
+      * and its only writer. Null until a caret is actually asked for, so a parse that never asks
+      * never builds one; holding the slot here rather than in the leaf is what makes the
+      * memoization per-parse rather than per-parser.
       */
-    lazy val locationMap: Option[LocationMap] = locationMapThunk()
-  }
-
-  protected[parse] object State {
-    val noLocationMap: () => Option[LocationMap] = () => None
+    var locationMap: LocationMap = null
   }
 
   private[parse] object Impl {
 
     val nilError: Eval[Chain[Nothing]] = Eval.now(Chain.nil)
+
+    def isUnit(a: Any): Boolean = a.equals(())
+
+    /** Equality that does not cooperate across boxed primitives. Scala's `==` says `58 == ':'`,
+      * which would let the optimizer hand back a `Parser[S, Char]` where a `Parser[S, Int]` was
+      * asked for; char's optimizer avoids this by type-testing the constant it is given, which
+      * generically is not possible over an abstract `Token`.
+      */
+    def sameValueAndType(a: Any, b: Any): Boolean = {
+      val ra = a.asInstanceOf[AnyRef]
+      val rb = b.asInstanceOf[AnyRef]
+      (ra ne null) && (rb ne null) && (ra.getClass == rb.getClass) && (ra == rb)
+    }
+
+    val someUnit: Some[Unit] = Some(())
+
+    def sameAlphabet[S](a1: Alphabet[S], a2: Alphabet[S]): Boolean =
+      (a1.asInstanceOf[AnyRef] eq a2.asInstanceOf[AnyRef]) || (a1 == a2)
+
+    /** True when `lit`'s pattern is exactly its own tokens — every position a singleton set holding
+      * the token `lit` itself has there. Membership and token equality then coincide over `lit`, so
+      * matching it consumes `lit` and nothing else, which is what lets `SeqLit` take the
+      * `startsWithAt` fast path and lets the optimizer treat the literal's capture as a constant
+      * and rewrite a token set into literal alternatives. It is false for an alphabet whose literal
+      * patterns accept more than themselves (spec S3.2).
+      */
+    def exactLiteral[S](alpha: Alphabet[S])(lit: S): Boolean =
+      alpha.pattern(lit).iterator.zipWithIndex.forall { case (set, i) =>
+        alpha.singletonLiteralOf(set).isDefined && alpha.matchesAt(set, lit, i)
+      }
+
+    //////////////////////////////////////////////////////////////////////
+    // Function nodes: case classes so that the parser trees they sit in stay comparable by value.
+    //////////////////////////////////////////////////////////////////////
+
+    final case class ConstFn[A](result: A) extends Function1[Any, A] {
+      def apply(any: Any): A = result
+
+      override def andThen[B](that: A => B): ConstFn[B] = ConstFn(that(result))
+
+      override def toString(): String = s"ConstFn($result)"
+    }
+
+    final case class ToTupleWith1[A, C](item1: A) extends Function1[C, (A, C)] {
+      def apply(c: C): (A, C) = (item1, c)
+
+      override def andThen[E](fn: ((A, C)) => E): C => E =
+        fn match {
+          case Map1Fn(fn1) =>
+            // we know that E =:= (B, C) for some B
+            type B = Any
+            ToTupleWith1(fn1.asInstanceOf[A => B](item1)).asInstanceOf[C => E]
+          case _ => super.andThen(fn)
+        }
+    }
+
+    final case class ToTupleWith2[B, C](item2: B) extends Function1[C, (C, B)] {
+      def apply(c: C): (C, B) = (c, item2)
+    }
+
+    final case class FanOut[A]() extends Function1[A, (A, A)] {
+      def apply(a: A): (A, A) = (a, a)
+    }
+
+    final case class Map1Fn[A, B, C](fn: A => B) extends Function1[(A, C), (B, C)] {
+      def apply(ac: (A, C)): (B, C) = (fn(ac._1), ac._2)
+    }
+
+    /** rewrites ((a, b), c) to (a, (b, c)) */
+    final case class RotateRight[A, B, C]() extends Function1[(A, (B, C)), ((A, B), C)] {
+      def apply(abc: (A, (B, C))): ((A, B), C) = ((abc._1, abc._2._1), abc._2._2)
+    }
+
+    /** makes [[unmap0]] a pure function with respect to `equals` */
+    final case class UnmapDefer0[S](fn: () => Parser0[S, Any]) extends Function0[Parser0[S, Any]] {
+      def apply(): Parser0[S, Any] = unmap0(compute0(fn))
+    }
+
+    /** makes [[unmap]] a pure function with respect to `equals` */
+    final case class UnmapDefer[S](fn: () => Parser[S, Any]) extends Function0[Parser[S, Any]] {
+      def apply(): Parser[S, Any] = unmap(compute(fn))
+    }
+
+    //////////////////////////////////////////////////////////////////////
+    // Structural analysis. Every function here is construction-time only.
+    //////////////////////////////////////////////////////////////////////
+
+    /** only call this when removing items from the head or tail of the list: removing from the
+      * middle may unlock a merge that wasn't possible before
+      */
+    def cheapOneOf0[S, A](items: List[Parser0[S, A]]): Parser0[S, A] =
+      items match {
+        case Nil => Fail()
+        case pa :: Nil => pa
+        case many =>
+          def to1(p: Parser0[S, A]): Option[Parser[S, A]] =
+            p match {
+              case p1: Parser[S, A] => Some(p1)
+              case _ => None
+            }
+
+          many.traverse(to1) match {
+            case Some(p1s) => OneOf(p1s)
+            case None => OneOf0(many)
+          }
+      }
+
+    final def doesBacktrackCheat[S](p: Parser0[S, Any]): Boolean =
+      doesBacktrack(p)
+
+    @tailrec
+    final def doesBacktrack[S](p: Parser0[S, Any]): Boolean =
+      p match {
+        case Backtrack0(_) | Backtrack(_) | TokenIn(_, _) | TokensWhile(_, _) | TokensWhile0(_, _) |
+            EmptySlice(_) | SeqLit(_, _) | IgnoreCase(_) | Length(_, _) | StartParser() | EndParser(
+              _
+            ) | Index() | GetCaret() | Pure(_) | Fail() | FailWith(_) | Not(_, _) | SeqIn(_, _) =>
+          true
+        case Map0(p1, _) => doesBacktrack(p1)
+        case Map(p1, _) => doesBacktrack(p1)
+        case SoftProd0(a, b) => doesBacktrackCheat(a) && doesBacktrack(b)
+        case SoftProd(a, b) => doesBacktrackCheat(a) && doesBacktrack(b)
+        case WithContextP0(_, p1) => doesBacktrack(p1)
+        case WithContextP(_, p1) => doesBacktrack(p1)
+        case OneOf0(ps) => ps.forall(doesBacktrackCheat(_))
+        case OneOf(ps) => ps.forall(doesBacktrackCheat(_))
+        case Void0(p1) => doesBacktrack(p1)
+        case Void(p1) => doesBacktrack(p1)
+        case _ => false
+      }
+
+    /** A parser that matches exactly the literal it was built from — its pattern is the literal's
+      * own tokens, so the input it consumes is the literal and nothing else. This is what lets the
+      * optimizer treat a literal's capture as a known constant, and is false for an alphabet whose
+      * literal patterns accept more than themselves.
+      */
+    def constantSliceOf[S](alpha: Alphabet[S])(p: Parser0[S, Any]): Option[alpha.Slice] =
+      p match {
+        case sl @ SeqLit(a, lit) if sameAlphabet(alpha, a) && sl.byEquality =>
+          Some(alpha.slice(lit.asInstanceOf[S], 0, alpha.length(lit.asInstanceOf[S])))
+        case TokenIn(a, set) if sameAlphabet(alpha, a) =>
+          // a one-token set matches that token and no other, so the capture is that token's slice
+          a.singletonLiteralOf(set.asInstanceOf[a.TokenSet]).map(lit => alpha.slice(lit, 0, 1))
+        case _ => None
+      }
+
+    /** the literal a parser both matches and returns the capture of, if it is one */
+    def definiteSlice[S](p: Parser0[S, Any]): Option[(Alphabet[S], S)] =
+      p match {
+        case Map(under, ConstFn(res)) =>
+          under match {
+            case sl @ SeqLit(alpha, lit) if sl.byEquality =>
+              val l = lit.asInstanceOf[S]
+              if (sameValueAndType(alpha.slice(l, 0, alpha.length(l)), res)) Some((alpha, l))
+              else None
+            case TokenIn(alpha, set) =>
+              alpha.singletonLiteralOf(set.asInstanceOf[alpha.TokenSet]) match {
+                case Some(lit) if sameValueAndType(alpha.slice(lit, 0, 1), res) =>
+                  Some((alpha, lit))
+                case _ => None
+              }
+            case _ => None
+          }
+        case _ => None
+      }
+
+    /** does this parser return the slice it matched? */
+    def matchesSlice[S](alpha: Alphabet[S])(p: Parser0[S, Any]): Boolean =
+      p match {
+        case SliceP0(a, _) => sameAlphabet(alpha, a)
+        case SliceP(a, _) => sameAlphabet(alpha, a)
+        case SeqIn(a, _) => sameAlphabet(alpha, a)
+        case Length(a, _) => sameAlphabet(alpha, a)
+        case TokensWhile(a, _) => sameAlphabet(alpha, a)
+        case TokensWhile0(a, _) => sameAlphabet(alpha, a)
+        case EmptySlice(a) => sameAlphabet(alpha, a)
+        case Fail() | FailWith(_) => true
+        case OneOf(ss) => ss.forall(matchesSlice(alpha))
+        case OneOf0(ss) => ss.forall(matchesSlice(alpha))
+        case WithContextP(_, p1) => matchesSlice(alpha)(p1)
+        case WithContextP0(_, p1) => matchesSlice(alpha)(p1)
+        case _ => definiteSlice(p).exists { case (a, _) => sameAlphabet(alpha, a) }
+      }
+
+    /** does this parser always succeed without consuming input? (a `Parser` never does, and by
+      * construction a `oneOf0` never does either)
+      */
+    final def alwaysSucceeds[S](p: Parser0[S, Any]): Boolean =
+      p match {
+        case Index() | GetCaret() | Pure(_) | EmptySlice(_) => true
+        case Map0(p1, _) => alwaysSucceeds(p1)
+        case SoftProd0(a, b) => alwaysSucceeds(a) && alwaysSucceeds(b)
+        case Prod0(a, b) => alwaysSucceeds(a) && alwaysSucceeds(b)
+        case WithContextP0(_, p1) => alwaysSucceeds(p1)
+        case WithSliceP0(_, parser) => alwaysSucceeds(parser)
+        // by construction we never build a Not(Fail()), since that is just unit
+        case _ => false
+      }
+
+    /** does this parser always eventually succeed, maybe consuming input? (a `Parser` has to
+      * consume, but may consume an empty run, so it can't always succeed)
+      */
+    final def eventuallySucceeds[S](p: Parser0[S, Any]): Boolean =
+      p match {
+        case Index() | GetCaret() | Pure(_) | EmptySlice(_) | TokensWhile0(_, _) => true
+        case Map0(p1, _) => eventuallySucceeds(p1)
+        case SoftProd0(a, b) => eventuallySucceeds(a) && eventuallySucceeds(b)
+        case Prod0(a, b) => eventuallySucceeds(a) && eventuallySucceeds(b)
+        case WithContextP0(_, p1) => eventuallySucceeds(p1)
+        case OneOf0(ps) => eventuallySucceeds(ps.last)
+        case _ => false
+      }
+
+    /** '''if''' the parser succeeds, do we already know the result? (it may not always succeed) */
+    final def hasKnownResult[S, A](p: Parser0[S, A]): Option[A] =
+      p match {
+        case Pure(a) => Some(a)
+        case TokenIn(alpha, set) =>
+          alpha
+            .singletonLiteralOf(set.asInstanceOf[alpha.TokenSet])
+            .map(lit => alpha.tokenAt(lit, 0).asInstanceOf[A])
+        case Map0(_, fn) =>
+          // scala 3.0.2 seems to fail if we inline this match above
+          fn match {
+            case ConstFn(a) => Some(a.asInstanceOf[A])
+            // by construction, if the left hasKnownResult, the right is a ConstFn
+            case _ => None
+          }
+        case Map(_, fn) =>
+          fn match {
+            case ConstFn(a) => Some(a.asInstanceOf[A])
+            case _ => None
+          }
+        case SoftProd0(a, b) =>
+          for {
+            ra <- hasKnownResult(a)
+            rb <- hasKnownResult(b)
+          } yield (ra, rb).asInstanceOf[A]
+        case Prod0(a, b) =>
+          for {
+            ra <- hasKnownResult(a)
+            rb <- hasKnownResult(b)
+          } yield (ra, rb).asInstanceOf[A]
+        case SoftProd(a, b) =>
+          for {
+            ra <- hasKnownResult(a)
+            rb <- hasKnownResult(b)
+          } yield (ra, rb).asInstanceOf[A]
+        case Prod(a, b) =>
+          for {
+            ra <- hasKnownResult(a)
+            rb <- hasKnownResult(b)
+          } yield (ra, rb).asInstanceOf[A]
+        case OneOf(h :: t) =>
+          val ra = hasKnownResult(h)
+          if (ra.isDefined && t.forall { p1 => hasKnownResult(p1) == ra }) ra else None
+        case OneOf0(h :: t) =>
+          val ra = hasKnownResult(h)
+          if (ra.isDefined && t.forall { p1 => hasKnownResult(p1) == ra }) ra else None
+        case WithContextP(_, p1) => hasKnownResult(p1)
+        case WithContextP0(_, p1) => hasKnownResult(p1)
+        case Backtrack(p1) => hasKnownResult(p1)
+        case Backtrack0(p1) => hasKnownResult(p1)
+        case Not(_, _) | Peek(_) | Void(_) | Void0(_) | StartParser() | EndParser(_) |
+            SeqLit(_, _) | IgnoreCase(_) =>
+          // these are always unit
+          someUnit.asInstanceOf[Option[A]]
+        case Rep(_, _, _, _) | FlatMap0(_, _) | FlatMap(_, _) | TailRecM(_, _) | TailRecM0(_, _) |
+            Defer(_) | Defer0(_) | GetCaret() | Index() | Length(_, _) | Fail() | FailWith(_) |
+            TokensWhile(_, _) | TokensWhile0(_, _) | EmptySlice(_) | SliceP(_, _) | OneOf(Nil) |
+            OneOf0(Nil) | SliceP0(_, _) | Select(_, _) | Select0(_, _) | SeqIn(_, _) |
+            WithSliceP(_, _) | WithSliceP0(_, _) =>
+          // these we don't know the value of, fundamentally or by construction
+          None
+      }
+
+    /** @return true if this parser does not capture, so it is already the same as its void */
+    def isVoided[S](p: Parser0[S, Any]): Boolean =
+      p match {
+        case Pure(a) => isUnit(a)
+        case StartParser() | EndParser(_) | Void(_) | Void0(_) | IgnoreCase(_) | SeqLit(_, _) |
+            Fail() | FailWith(_) | Not(_, _) | Peek(_) =>
+          true
+        case OneOf(ps) => ps.forall(isVoided(_))
+        case OneOf0(ps) => ps.forall(isVoided(_))
+        case WithContextP(_, p1) => isVoided(p1)
+        case WithContextP0(_, p1) => isVoided(p1)
+        case Backtrack(p1) => isVoided(p1)
+        case Backtrack0(p1) => isVoided(p1)
+        case Length(_, _) | SliceP(_, _) | SeqIn(_, _) | Prod(_, _) | SoftProd(_, _) | Map(_, _) |
+            Select(_, _) | FlatMap(_, _) | TailRecM(_, _) | Defer(_) | Rep(_, _, _, _) |
+            TokenIn(_, _) | TokensWhile(_, _) | TokensWhile0(_, _) | EmptySlice(_) | SliceP0(_, _) |
+            Index() | GetCaret() | Prod0(_, _) | SoftProd0(_, _) | Map0(_, _) | Select0(_, _) |
+            FlatMap0(_, _) | TailRecM0(_, _) | Defer0(_) | WithSliceP(_, _) | WithSliceP0(_, _) =>
+          false
+      }
+
+    def expect1[S, A](p: Parser0[S, A]): Parser[S, A] =
+      p match {
+        case p1: Parser[S, A] => p1
+        case notP1 =>
+          // $COVERAGE-OFF$
+          sys.error(s"violated invariant: $notP1 should be a Parser")
+        // $COVERAGE-ON$
+      }
+
+    /** Remove trailing map functions, which would otherwise allocate results we are about to throw
+      * away by voiding or slicing. This stops at a `SliceP` or a `Void`, which are markers that
+      * everything below them has already been transformed.
+      */
+    def unmap0[S](pa: Parser0[S, Any]): Parser0[S, Any] =
+      pa match {
+        case p1: Parser[S, Any] => unmap(p1)
+        case s if alwaysSucceeds(s) => Parser.unit
+        case Map0(p, _) =>
+          // we discard any allocations done by fn
+          unmap0(p)
+        case Select0(p, fn) => Select0(p, unmap0(fn))
+        case SliceP0(_, s) =>
+          // SliceP is added privately, and only after unmap0
+          s
+        case WithSliceP0(_, s) => unmap0(s)
+        case Void0(v) =>
+          // Void is added privately, and only after unmap0
+          v
+        case n @ Not(_, _) =>
+          // not is already voided
+          n
+        case p @ Peek(_) =>
+          // peek is already voided
+          p
+        case Backtrack0(p) =>
+          // unmap0 may simplify enough to remove the backtrack wrapper
+          Parser.backtrack0(unmap0(p))
+        case OneOf0(ps) =>
+          // Find the fixed point here
+          val next = Optimizer.oneOf0Internal(ps.map(unmap0[S]))
+          if (next == pa) pa
+          else unmap0(next)
+        case Prod0(p1, p2) =>
+          unmap0(p1) match {
+            case Prod0(p11, p12) =>
+              // right associate so we can check matches a bit faster; p12 is already unmapped, so
+              // we wrap with Void to prevent n^2 cost
+              Prod0(p11, unmap0(Prod0(Void0(p12), p2)))
+            case u1 if u1 eq Parser.unit =>
+              unmap0(p2)
+            case u1 =>
+              val u2 = unmap0(p2)
+              if (u2 eq Parser.unit) u1
+              else Prod0(u1, u2)
+          }
+        case SoftProd0(p1, p2) =>
+          unmap0(p1) match {
+            case SoftProd0(p11, p12) =>
+              SoftProd0(p11, unmap0(SoftProd0(Void0(p12), p2)))
+            case u1 if u1 eq Parser.unit =>
+              unmap0(p2)
+            case u1 =>
+              val u2 = unmap0(p2)
+              if (u2 eq Parser.unit) u1
+              else SoftProd0(u1, u2)
+          }
+        case Defer0(fn) =>
+          fn match {
+            case UnmapDefer0(_) => pa // already unmapped
+            case _ => Defer0(UnmapDefer0(fn))
+          }
+        case WithContextP0(ctx, p0) => WithContextP0(ctx, unmap0(p0))
+        case StartParser() | EndParser(_) | TokensWhile0(_, _) | TailRecM0(_, _) | FlatMap0(_, _) =>
+          // we can't transform these significantly
+          pa
+        case Pure(_) | Index() | GetCaret() | EmptySlice(_) =>
+          // unreachable: alwaysSucceeds above already answered for these
+          Parser.unit
+      }
+
+    /** the [[unmap0]] of a parser known to consume input */
+    def unmap[S](pa: Parser[S, Any]): Parser[S, Any] =
+      pa match {
+        case Map(p, _) =>
+          // we discard any allocations done by fn
+          unmap(p)
+        case Select(p, fn) => Select(p, unmap0(fn))
+        case SliceP(_, s) =>
+          // SliceP is added privately, and only after unmap
+          s
+        case WithSliceP(_, s) => unmap(s)
+        case Void(v) =>
+          // Void is added privately, and only after unmap
+          v
+        case Backtrack(p) =>
+          // unmap may simplify enough to remove the backtrack wrapper
+          Parser.backtrack(unmap(p))
+        case OneOf(ps) =>
+          val next = Optimizer.oneOfInternal(ps.map(unmap[S]))
+          if (next == pa) pa
+          else unmap(next)
+        case Prod(p1, p2) =>
+          unmap0(p1) match {
+            case Prod0(p11, p12) =>
+              // right associate so we can check matches a bit faster; we wrap with Void to prevent
+              // n^2 cost
+              Prod(p11, unmap0(Parser.product0(p12.void, p2)))
+            case Prod(p11, p12) =>
+              Prod(p11, unmap0(Parser.product0(p12.void, p2)))
+            case u1 if u1 eq Parser.unit =>
+              // if unmap0(p1) is unit, p2 must be a Parser
+              unmap(expect1(p2))
+            case u1 =>
+              val u2 = unmap0(p2)
+              if (u2 eq Parser.unit) expect1(u1)
+              else Prod(u1, u2)
+          }
+        case SoftProd(p1, p2) =>
+          unmap0(p1) match {
+            case SoftProd0(p11, p12) =>
+              SoftProd(p11, unmap0(Parser.softProduct0(p12.void, p2)))
+            case SoftProd(p11, p12) =>
+              SoftProd(p11, unmap0(Parser.softProduct0(p12.void, p2)))
+            case u1 if u1 eq Parser.unit =>
+              unmap(expect1(p2))
+            case u1 =>
+              val u2 = unmap0(p2)
+              if (u2 eq Parser.unit) expect1(u1)
+              else SoftProd(u1, u2)
+          }
+        case Defer(fn) =>
+          fn match {
+            case UnmapDefer(_) => pa // already unmapped
+            case _ => Defer(UnmapDefer(fn))
+          }
+        case Rep(p, min, max, _) => Rep(unmap(p), min, max, Accumulator0.unitAccumulator0)
+        case WithContextP(ctx, p) => WithContextP(ctx, unmap(p))
+        case TokenIn(_, _) | TokensWhile(_, _) | SeqLit(_, _) | SeqIn(_, _) | IgnoreCase(_) |
+            Fail() | FailWith(_) | Length(_, _) | TailRecM(_, _) | FlatMap(_, _) =>
+          // we can't transform these significantly
+          pa
+      }
+
+    //////////////////////////////////////////////////////////////////////
+    // Leaves
+    //////////////////////////////////////////////////////////////////////
 
     final case class Pure[S, A](result: A) extends Parser0[S, A] {
       override def parseMut(state: State[S]): A = result
@@ -1090,15 +1810,12 @@ object Parser {
       private[this] val len: Int = alpha.length(lit)
       require(len > 0, "we need a non-empty literal to expect a match")
 
-      /** True when every position's set is the singleton holding the literal's own token, so that
-        * membership and token equality coincide and `startsWithAt` may answer for the whole
-        * literal. This is (slightly stronger than) the precondition of
-        * `AlphabetLaws.singletonPatternCoherent`, which is what makes the two paths agree.
+      /** See [[Impl.exactLiteral]]: when true, `startsWithAt` may answer for the whole literal.
+        * This is (slightly stronger than) the precondition of
+        * `AlphabetLaws.singletonPatternCoherent`, which is what makes the two paths agree; the
+        * optimizer also reads it to decide whether this literal's capture is a known constant.
         */
-      private[this] val byEquality: Boolean = {
-        val pat = alpha.pattern(lit)
-        matchesPattern(pat, lit, 0) && pat.forall(alpha.literalsOf(_).lengthCompare(1) == 0)
-      }
+      val byEquality: Boolean = Impl.exactLiteral(alpha)(lit)
 
       /** Empty on the equality path, which never consults it: retaining the sets would cost char a
         * `CharSet` per character of every literal, which today's `Str` does not pay.
@@ -1127,6 +1844,41 @@ object Parser {
           i += 1
         }
         ok
+      }
+    }
+
+    /** Char-only residue, typed at the char instantiation and only ever built by the `cats.parse`
+      * facade's `ignoreCase`: `String.regionMatches`' case-insensitive comparison is not a
+      * [[Alphabet.pattern]] (it folds pairs the per-position sets can't name), so it stays its own
+      * leaf. It lives here rather than in `cats.parse` only because [[Parser0]] is sealed.
+      */
+    final case class IgnoreCase(message: String) extends Parser[String, Unit] {
+      require(message.nonEmpty, "we need a non-empty string to expect a message")
+
+      override def parseMut(state: State[String]): Unit = {
+        val offset = state.offset
+        if (state.input.regionMatches(true, offset, message, 0, message.length)) {
+          state.offset += message.length
+        } else {
+          state.error = Eval.later(Chain.one(Expectation.OneOfSeq(offset, message :: Nil)))
+        }
+        ()
+      }
+    }
+
+    /** Char-only residue, as [[IgnoreCase]] is, and typed at the char instantiation for the same
+      * reason: line and column are not a generic notion. It builds the [[LocationMap]] on first use
+      * and parks it in `State`'s slot, so repeated carets within one parse share one map.
+      */
+    final case class GetCaret() extends Parser0[String, Caret] {
+      override def parseMut(state: State[String]): Caret = {
+        var lm = state.locationMap
+        if (lm eq null) {
+          lm = LocationMap(state.input)
+          state.locationMap = lm
+        }
+        // this unsafe call is safe because the offset can never go too far
+        lm.toCaretUnsafe(state.offset)
       }
     }
 
@@ -1266,7 +2018,7 @@ object Parser {
       val init = state.offset
       pa.parseMut(state)
       state.capture = s0
-      if (s0 && (state.error eq null)) alpha.slice(state.input, init, state.offset)
+      if (state.error eq null) alpha.slice(state.input, init, state.offset)
       else null.asInstanceOf[Sl]
     }
 
@@ -1324,16 +2076,24 @@ object Parser {
 
     final case class Fail[S, A]() extends Parser[S, A] {
       override def parseMut(state: State[S]): A = {
-        state.error = Eval.later(Chain.one(Expectation.Fail(state.offset)))
+        // read the offset now, into the closure: state.offset is mutable, and a soft product that
+        // rewinds before this error is forced would otherwise report the rewound position
+        val offset = state.offset
+        state.error = Eval.later(Chain.one(Expectation.Fail(offset)))
         null.asInstanceOf[A]
       }
+
+      def widen[B]: Parser[S, B] = this.asInstanceOf[Parser[S, B]]
     }
 
     final case class FailWith[S, A](message: String) extends Parser[S, A] {
       override def parseMut(state: State[S]): A = {
-        state.error = Eval.later(Chain.one(Expectation.FailWith(state.offset, message)))
+        val offset = state.offset
+        state.error = Eval.later(Chain.one(Expectation.FailWith(offset, message)))
         null.asInstanceOf[A]
       }
+
+      def widen[B]: Parser[S, B] = this.asInstanceOf[Parser[S, B]]
     }
 
     final case class Defer[S, A](fn: () => Parser[S, A]) extends Parser[S, A] {
@@ -1582,32 +2342,6 @@ object Parser {
       override def parseMut(state: State[S]): B = Impl.map(parser, fn, state)
     }
 
-    final def flatMap[S, A, B](
-        parser: Parser0[S, A],
-        fn: A => Parser0[S, B],
-        state: State[S]
-    ): B = {
-      // we can't void before flatMap: we need the value to produce the next parser
-      val cap = state.capture
-      state.capture = true
-      val a = parser.parseMut(state)
-      state.capture = cap
-
-      if (state.error eq null) fn(a).parseMut(state)
-      else null.asInstanceOf[B]
-    }
-
-    final case class FlatMap0[S, A, B](parser: Parser0[S, A], fn: A => Parser0[S, B])
-        extends Parser0[S, B] {
-      override def parseMut(state: State[S]): B = Impl.flatMap(parser, fn, state)
-    }
-
-    // at least one of the parsers needs to be a Parser
-    final case class FlatMap[S, A, B](parser: Parser0[S, A], fn: A => Parser0[S, B])
-        extends Parser[S, B] {
-      override def parseMut(state: State[S]): B = Impl.flatMap(parser, fn, state)
-    }
-
     final def select[S, A, B, C](
         pab: Parser0[S, Either[A, B]],
         pc: Parser0[S, C],
@@ -1637,6 +2371,32 @@ object Parser {
     final case class Select[S, A, B, C](pab: Parser0[S, Either[A, B]], pc: Parser0[S, C])
         extends Parser[S, Either[(A, C), B]] {
       override def parseMut(state: State[S]): Either[(A, C), B] = Impl.select(pab, pc, state)
+    }
+
+    final def flatMap[S, A, B](
+        parser: Parser0[S, A],
+        fn: A => Parser0[S, B],
+        state: State[S]
+    ): B = {
+      // we can't void before flatMap: we need the value to produce the next parser
+      val cap = state.capture
+      state.capture = true
+      val a = parser.parseMut(state)
+      state.capture = cap
+
+      if (state.error eq null) fn(a).parseMut(state)
+      else null.asInstanceOf[B]
+    }
+
+    final case class FlatMap0[S, A, B](parser: Parser0[S, A], fn: A => Parser0[S, B])
+        extends Parser0[S, B] {
+      override def parseMut(state: State[S]): B = Impl.flatMap(parser, fn, state)
+    }
+
+    // at least one of the parsers needs to be a Parser
+    final case class FlatMap[S, A, B](parser: Parser0[S, A], fn: A => Parser0[S, B])
+        extends Parser[S, B] {
+      override def parseMut(state: State[S]): B = Impl.flatMap(parser, fn, state)
     }
 
     final def tailRecM[S, A, B](
@@ -1867,4 +2627,20 @@ object Parser0 {
       def align[A, B](pa: Parser0[Any, A], pb: Parser0[Any, B]): Parser0[Any, Ior[A, B]] =
         Parser.align0(pa, pb)
     }
+
+  /** char's `.string`/`.withString` syntax. It lives in this companion — rather than with the rest
+    * of the char facade in `cats.parse` — because the companion of the receiver's type is the only
+    * implicit scope every char call site sees, which is what keeps the generalization invisible to
+    * char users who never import anything new (spec S3.1).
+    */
+  implicit def catsParseStringSyntax0[A](
+      parser: Parser0[String, A]
+  ): cats.parse.Parser.StringSyntax0[A] =
+    new cats.parse.Parser.StringSyntax0(parser)
+
+  /** the [[catsParseStringSyntax0]] refined for a parser known to consume input */
+  implicit def catsParseStringSyntax[A](
+      parser: Parser[String, A]
+  ): cats.parse.Parser.StringSyntax[A] =
+    new cats.parse.Parser.StringSyntax(parser)
 }

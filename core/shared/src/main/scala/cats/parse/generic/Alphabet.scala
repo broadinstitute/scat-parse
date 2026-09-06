@@ -245,6 +245,21 @@ abstract class Alphabet[S] extends Serializable {
     */
   def literalsOf(set: TokenSet): List[S]
 
+  /** The sole member of `set`, as a length-1 literal. A one-token set matches that token and no
+    * other, which is what lets the optimizer treat such a parser's result and capture as known
+    * constants — so this is asked of every `tokenIn` the optimizer touches, and instances whose
+    * [[literalsOf]] is expensive (char's `universal` enumerates 65536 literals) should override it
+    * with a cheap size test.
+    *
+    * @return
+    *   the single member of `set`, or None when `set` has more than one
+    */
+  def singletonLiteralOf(set: TokenSet): Option[S] =
+    literalsOf(set) match {
+      case lit :: Nil => Some(lit)
+      case _ => None
+    }
+
   /** Build the matcher used by multi-literal alternation (`seqIn`). Built cold at parser
     * construction; the hot side is one [[SeqMatcher.matchAt]] call per attempt. The default is the
     * naive linear reference ([[SeqMatcher.naive]]); instances override for speed but must agree

@@ -1,4 +1,3 @@
-import com.typesafe.tools.mima.core._
 import Dependencies._
 val scala212 = "2.12.21"
 val scala213 = "2.13.16"
@@ -10,17 +9,19 @@ GlobalScope / tlCommandAliases ++= Map(
   "prePR" -> List("githubWorkflowGenerate", "+fmt", "bench/compile", "+test")
 )
 
-ThisBuild / tlBaseVersion := "1.1"
-// continue enforcing bincompat with 0.3.x series
-ThisBuild / tlMimaPreviousVersions ++= (0 to 10).map(x => s"0.3.$x").toSet
+ThisBuild / tlBaseVersion := "2.0"
+/*
+ * MiMa resets at the 2.0 major. Generalizing over the token type makes cats.parse.Parser0/Parser
+ * aliases for cats.parse.generic.Parser0/Parser at the char alphabet, which erases the old classes
+ * from the bytecode -- no filter covers a vanished class. 2.0 is source-compatible for char users
+ * (the unchanged test suite is the proof) and binary-breaking, declared up front; see spec S7.
+ */
 
 ThisBuild / startYear := Some(2021)
 ThisBuild / developers += tlGitHubDev("johnynek", "P. Oscar Boykin")
 
 ThisBuild / crossScalaVersions := List(scala212, scala213, scala3)
 ThisBuild / scalaVersion := scala213
-
-ThisBuild / tlVersionIntroduced := Map("3" -> "0.3.4")
 
 ThisBuild / githubWorkflowAddedJobs ++= Seq(
   WorkflowJob(
@@ -73,21 +74,9 @@ lazy val core = crossProject(JSPlatform, JVMPlatform, NativePlatform)
             "org.typelevel" % "kind-projector" % "0.13.3" cross CrossVersion.full
           )
         )
-    },
-    mimaBinaryIssueFilters ++= {
-      /*
-       * It is okay to filter anything in Impl or RadixNode which are private
-       */
-      if (tlIsScala3.value)
-        List(
-          ProblemFilters.exclude[DirectMissingMethodProblem]("cats.parse.Parser#Error.fromProduct"),
-          ProblemFilters.exclude[IncompatibleResultTypeProblem]("cats.parse.Parser#Error.unapply"),
-          ProblemFilters.exclude[MissingTypesProblem]("cats.parse.Parser$Error$"),
-          ProblemFilters.exclude[IncompatibleResultTypeProblem]("cats.parse.Parser#Error.unapply"),
-          ProblemFilters.exclude[DirectMissingMethodProblem]("cats.parse.Parser#Error.fromProduct")
-        )
-      else Nil
-    } ++ MimaExclusionRules.parserImpl ++ MimaExclusionRules.bitSetUtil
+    }
+    // no mimaBinaryIssueFilters: with the 2.0 reset above there is no previous version to check
+    // against, and every filter here named a class the cutover deleted
   )
   .jvmSettings(
     // We test against jawn on JVM for some json parsers
@@ -97,8 +86,6 @@ lazy val core = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     coverageEnabled := false
   )
   .nativeSettings(
-    // cats-parse 1.0.1 switches to Scala Native 0.5, reset tlVersionIntroduced
-    tlVersionIntroduced := List("2.12", "2.13", "3").map(_ -> "1.0.1").toMap,
     coverageEnabled := false
   )
 

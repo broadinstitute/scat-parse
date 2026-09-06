@@ -47,6 +47,18 @@ object StringAlphabet extends Alphabet[String] {
       private[parse] val ranges: NonEmptyList[(Char, Char)]
   ) extends Serializable {
     override def toString(): String = s"CharSet($ranges)"
+
+    /* `ranges` is canonical -- minimal, disjoint, ascending, from `rangesFor` on sorted input -- so
+     * it decides membership, and equality on it is set equality. This is load-bearing: parser nodes
+     * are case classes over their TokenSet, and char's own equality laws (charIn(a) | charIn(b) ==
+     * charIn(a | b), charWhere(_ => true) == anyChar) are structural. */
+    override def equals(other: Any): Boolean =
+      other match {
+        case that: CharSet => (this eq that) || (ranges == that.ranges)
+        case _ => false
+      }
+
+    override def hashCode(): Int = ranges.hashCode()
   }
 
   final case class InRange(offset: Int, lower: Char, upper: Char)
@@ -61,7 +73,28 @@ object StringAlphabet extends Alphabet[String] {
     require(cs.nonEmpty, "cannot build an empty CharSet")
     val ary = cs.toArray
     Arrays.sort(ary)
-    new CharSet(ary(0).toInt, BitSetUtil.bitSetFor(ary), cats.parse.Parser.rangesFor(ary))
+    new CharSet(ary(0).toInt, BitSetUtil.bitSetFor(ary), rangesFor(ary))
+  }
+
+  /** The minimal ascending contiguous ranges covering exactly the chars of `sorted`, which must be
+    * sorted. This canonical form is what makes [[CharSet]] equality set equality.
+    *
+    * @return
+    *   one `(lower, upper)` pair per contiguous run
+    */
+  private[parse] def rangesFor(sorted: Array[Char]): NonEmptyList[(Char, Char)] = {
+    def rangesFrom(start: Char, end: Char, idx: Int): NonEmptyList[(Char, Char)] =
+      if (idx >= sorted.length || (idx < 0)) NonEmptyList((start, end), Nil)
+      else {
+        val end1 = sorted(idx)
+        if ((end1.toInt == end.toInt + 1) || (end1 == end)) rangesFrom(start, end1, idx + 1)
+        else {
+          // we had a break:
+          (start, end) :: rangesFrom(end1, end1, idx + 1)
+        }
+      }
+
+    rangesFrom(sorted(0), sorted(0), 1)
   }
 
   //////////////////////////////////////////////////////////////////////
@@ -233,6 +266,9 @@ object StringAlphabet extends Alphabet[String] {
 
   def literalsOf(set: CharSet): List[String] =
     set.ranges.toList.flatMap { case (lo, hi) => (lo to hi).map(_.toString) }
+
+  override def singletonLiteralOf(set: CharSet): Option[String] =
+    if (BitSetUtil.isSingleton(set.bitSet)) Some(set.min.toChar.toString) else None
 
   override def seqMatcher(alts: SortedSet[String]): SeqMatcher[String] = {
     require(alts.nonEmpty && !alts.exists(_.isEmpty), "seqMatcher requires non-empty literals")
