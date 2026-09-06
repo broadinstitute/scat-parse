@@ -218,7 +218,9 @@ sealed abstract class Parser0[S, +A] { self: Product =>
     * `state.error` on failure.
     *
     * @return
-    *   the parsed value, or `null` (as `A`) when the parse failed or `state.capture` is off
+    *   the parsed value; `null` (as `A`) when the parse failed or a [[Parser.Void]] above this
+    *   parser has turned `state.capture` off; or `()` (as `A`) from an [[Parser.Impl.CaptureLeaf]]
+    *   built with its capture off, which has no value to withhold
     */
   private[parse] def parseMut(state: Parser.State[S]): A
 
@@ -903,7 +905,7 @@ object Parser {
       case s if Impl.alwaysSucceeds(s) => unit
       case v @ Impl.Void0(_) => v
       case _ =>
-        val unmapped = Impl.unmap0(pa)
+        val unmapped = Impl.voidLeaf0(Impl.unmap0(pa))
         // normalization can expose that a parser always succeeds consuming nothing even when the
         // pre-normalization shape didn't say so (`Backtrack0(Prod0(index, index))`, say). Answering
         // `unit` for those keeps `void0` idempotent: without it `p.void` would be a wrapper whose
@@ -918,7 +920,7 @@ object Parser {
     pa match {
       case v @ Impl.Void(_) => v
       case _ =>
-        Impl.unmap(pa) match {
+        Impl.voidLeaf(Impl.unmap(pa)) match {
           case f @ Impl.Fail() => f.widen
           case f @ Impl.FailWith(_) => f.widen
           case notVoid =>
@@ -933,8 +935,13 @@ object Parser {
       case s1: Parser[S, Any] => slice(alpha)(s1)
       case sl if Impl.matchesSlice(alpha)(sl) => sl.asInstanceOf[Parser0[S, alpha.Slice]]
       case _ =>
-        Impl.unmap0(pa) match {
+        Impl.captureLeaf0(Impl.unmap0(pa)) match {
           case Impl.Pure(_) => Impl.EmptySlice[S, alpha.Slice](alpha)
+          // normalization can expose a parser that already returns its own slice even when the
+          // pre-normalization shape didn't say so -- `tokensIn0(set).void`, whose capture
+          // `captureLeaf0` just turned back on. Answering with it rather than wrapping it is what
+          // makes `p.void.slice` build the node `p.slice` builds, as it does for a `Parser`.
+          case sl if Impl.matchesSlice(alpha)(sl) => sl.asInstanceOf[Parser0[S, alpha.Slice]]
           case notEmpty => Impl.SliceP0[S, Any, alpha.Slice](alpha, notEmpty)
         }
     }
@@ -944,10 +951,10 @@ object Parser {
     pa match {
       case sl if Impl.matchesSlice(alpha)(sl) => sl.asInstanceOf[Parser[S, alpha.Slice]]
       case _ =>
-        Impl.unmap(pa) match {
-          case si @ Impl.SeqIn(_, _) => si.asInstanceOf[Parser[S, alpha.Slice]]
-          case len @ Impl.Length(_, _) => len.asInstanceOf[Parser[S, alpha.Slice]]
-          case tw @ Impl.TokensWhile(_, _) => tw.asInstanceOf[Parser[S, alpha.Slice]]
+        Impl.captureLeaf(Impl.unmap(pa)) match {
+          case si @ Impl.SeqIn(_, _, true) => si.asInstanceOf[Parser[S, alpha.Slice]]
+          case len @ Impl.Length(_, _, true) => len.asInstanceOf[Parser[S, alpha.Slice]]
+          case tw @ Impl.TokensWhile(_, _, true) => tw.asInstanceOf[Parser[S, alpha.Slice]]
           case f @ Impl.Fail() => f.widen
           case f @ Impl.FailWith(_) => f.widen
           case notSlice =>
@@ -1067,13 +1074,13 @@ object Parser {
     if (Impl.isUnit(b)) v.asInstanceOf[Parser[S, B]]
     else
       v match {
-        case Impl.Void(ti @ Impl.TokenIn(alpha, set)) =>
-          // a single-token set is cheap and always returns its own token even when voided, so
-          // there is no need to keep the Void wrapper around it
+        case ti @ Impl.TokenIn(alpha, set, false) =>
+          // a single-token set is cheap and always returns its own token, so the capturing form is
+          // the better node to build on even though what we were handed is the voided one
           alpha.singletonLiteralOf(set.asInstanceOf[alpha.TokenSet]) match {
             case Some(lit) if Impl.sameValueAndType(b, alpha.tokenAt(lit, 0)) =>
-              ti.asInstanceOf[Parser[S, B]]
-            case Some(_) => Impl.Map(ti, Impl.ConstFn(b))
+              ti.captured.asInstanceOf[Parser[S, B]]
+            case Some(_) => Impl.Map(Impl.expect1(ti.captured), Impl.ConstFn(b))
             case None => Impl.Map(v, Impl.ConstFn(b))
           }
         case f @ Impl.Fail() => f.widen
@@ -1345,6 +1352,12 @@ object Parser {
 
     var offset: Int = 0
     var error: Eval[Chain[Expectation[S]]] = null
+
+    /** Whether a [[Void]] or [[SliceP]] ''above'' the running parser has turned capturing off.
+      * Leaves whose capture is instead a property of the node itself — the region-capturing leaves,
+      * which [[Impl.voidLeaf]] rewrites at construction — never make it into this flag's scope:
+      * `void` hands their non-capturing form back bare, with no `Void` to do the flipping.
+      */
     var capture: Boolean = true
 
     /** The per-parse memo slot for the char-only `GetCaret` leaf, which is this field's only reader
@@ -1373,6 +1386,13 @@ object Parser {
     }
 
     val someUnit: Some[Unit] = Some(())
+
+    /** What a leaf whose capture was turned off at construction answers with. Such a node ''is''
+      * its own void, so it returns what a [[Void]] wrapped around it would have returned; the
+      * `null` the leaves still answer with when `state.capture` is off comes from a `Void` that is
+      * really there and will overwrite it.
+      */
+    val unitResult: Any = ()
 
     def sameAlphabet[S](a1: Alphabet[S], a2: Alphabet[S]): Boolean =
       (a1.asInstanceOf[AnyRef] eq a2.asInstanceOf[AnyRef]) || (a1 == a2)
@@ -1471,10 +1491,10 @@ object Parser {
     @tailrec
     final def doesBacktrack[S](p: Parser0[S, Any]): Boolean =
       p match {
-        case Backtrack0(_) | Backtrack(_) | TokenIn(_, _) | TokensWhile(_, _) | TokensWhile0(_, _) |
-            EmptySlice(_) | SeqLit(_, _) | IgnoreCase(_) | Length(_, _) | StartParser() | EndParser(
-              _
-            ) | Index() | GetCaret() | Pure(_) | Fail() | FailWith(_) | Not(_, _) | SeqIn(_, _) =>
+        case Backtrack0(_) | Backtrack(_) | TokenIn(_, _, _) | TokensWhile(_, _, _) |
+            TokensWhile0(_, _, _) | EmptySlice(_) | SeqLit(_, _) | IgnoreCase(_) | Length(_, _, _) |
+            StartParser() | EndParser(_) | Index() | GetCaret() | Pure(_) | Fail() | FailWith(_) |
+            Not(_, _) | SeqIn(_, _, _) =>
           true
         case Map0(p1, _) => doesBacktrack(p1)
         case Map(p1, _) => doesBacktrack(p1)
@@ -1498,7 +1518,7 @@ object Parser {
       p match {
         case sl @ SeqLit(a, lit) if sameAlphabet(alpha, a) && sl.byEquality =>
           Some(alpha.slice(lit.asInstanceOf[S], 0, alpha.length(lit.asInstanceOf[S])))
-        case TokenIn(a, set) if sameAlphabet(alpha, a) =>
+        case TokenIn(a, set, true) if sameAlphabet(alpha, a) =>
           // a one-token set matches that token and no other, so the capture is that token's slice
           a.singletonLiteralOf(set.asInstanceOf[a.TokenSet]).map(lit => alpha.slice(lit, 0, 1))
         case _ => None
@@ -1513,7 +1533,7 @@ object Parser {
               val l = lit.asInstanceOf[S]
               if (sameValueAndType(alpha.slice(l, 0, alpha.length(l)), res)) Some((alpha, l))
               else None
-            case TokenIn(alpha, set) =>
+            case TokenIn(alpha, set, true) =>
               alpha.singletonLiteralOf(set.asInstanceOf[alpha.TokenSet]) match {
                 case Some(lit) if sameValueAndType(alpha.slice(lit, 0, 1), res) =>
                   Some((alpha, lit))
@@ -1529,10 +1549,10 @@ object Parser {
       p match {
         case SliceP0(a, _) => sameAlphabet(alpha, a)
         case SliceP(a, _) => sameAlphabet(alpha, a)
-        case SeqIn(a, _) => sameAlphabet(alpha, a)
-        case Length(a, _) => sameAlphabet(alpha, a)
-        case TokensWhile(a, _) => sameAlphabet(alpha, a)
-        case TokensWhile0(a, _) => sameAlphabet(alpha, a)
+        case SeqIn(a, _, true) => sameAlphabet(alpha, a)
+        case Length(a, _, true) => sameAlphabet(alpha, a)
+        case TokensWhile(a, _, true) => sameAlphabet(alpha, a)
+        case TokensWhile0(a, _, true) => sameAlphabet(alpha, a)
         case EmptySlice(a) => sameAlphabet(alpha, a)
         case Fail() | FailWith(_) => true
         case OneOf(ss) => ss.forall(matchesSlice(alpha))
@@ -1562,7 +1582,7 @@ object Parser {
       */
     final def eventuallySucceeds[S](p: Parser0[S, Any]): Boolean =
       p match {
-        case Index() | GetCaret() | Pure(_) | EmptySlice(_) | TokensWhile0(_, _) => true
+        case Index() | GetCaret() | Pure(_) | EmptySlice(_) | TokensWhile0(_, _, _) => true
         case Map0(p1, _) => eventuallySucceeds(p1)
         case SoftProd0(a, b) => eventuallySucceeds(a) && eventuallySucceeds(b)
         case Prod0(a, b) => eventuallySucceeds(a) && eventuallySucceeds(b)
@@ -1575,10 +1595,12 @@ object Parser {
     final def hasKnownResult[S, A](p: Parser0[S, A]): Option[A] =
       p match {
         case Pure(a) => Some(a)
-        case TokenIn(alpha, set) =>
-          alpha
-            .singletonLiteralOf(set.asInstanceOf[alpha.TokenSet])
-            .map(lit => alpha.tokenAt(lit, 0).asInstanceOf[A])
+        case TokenIn(alpha, set, capturing) =>
+          if (capturing)
+            alpha
+              .singletonLiteralOf(set.asInstanceOf[alpha.TokenSet])
+              .map(lit => alpha.tokenAt(lit, 0).asInstanceOf[A])
+          else someUnit.asInstanceOf[Option[A]]
         case Map0(_, fn) =>
           // scala 3.0.2 seems to fail if we inline this match above
           fn match {
@@ -1622,13 +1644,15 @@ object Parser {
         case Backtrack(p1) => hasKnownResult(p1)
         case Backtrack0(p1) => hasKnownResult(p1)
         case Not(_, _) | Peek(_) | Void(_) | Void0(_) | StartParser() | EndParser(_) |
-            SeqLit(_, _) | IgnoreCase(_) =>
+            SeqLit(_, _) | IgnoreCase(_) | Length(_, _, false) | TokensWhile(_, _, false) |
+            TokensWhile0(_, _, false) | SeqIn(_, _, false) =>
           // these are always unit
           someUnit.asInstanceOf[Option[A]]
         case Rep(_, _, _, _) | FlatMap0(_, _) | FlatMap(_, _) | TailRecM(_, _) | TailRecM0(_, _) |
-            Defer(_) | Defer0(_) | GetCaret() | Index() | Length(_, _) | Fail() | FailWith(_) |
-            TokensWhile(_, _) | TokensWhile0(_, _) | EmptySlice(_) | SliceP(_, _) | OneOf(Nil) |
-            OneOf0(Nil) | SliceP0(_, _) | Select(_, _) | Select0(_, _) | SeqIn(_, _) |
+            Defer(_) | Defer0(_) | GetCaret() | Index() | Length(_, _, _) | Fail() | FailWith(_) |
+            TokensWhile(_, _, _) | TokensWhile0(_, _, _) | EmptySlice(_) | SliceP(_, _) | OneOf(
+              Nil
+            ) | OneOf0(Nil) | SliceP0(_, _) | Select(_, _) | Select0(_, _) | SeqIn(_, _, _) |
             WithSliceP(_, _) | WithSliceP0(_, _) =>
           // these we don't know the value of, fundamentally or by construction
           None
@@ -1647,13 +1671,49 @@ object Parser {
         case WithContextP0(_, p1) => isVoided(p1)
         case Backtrack(p1) => isVoided(p1)
         case Backtrack0(p1) => isVoided(p1)
-        case Length(_, _) | SliceP(_, _) | SeqIn(_, _) | Prod(_, _) | SoftProd(_, _) | Map(_, _) |
-            Select(_, _) | FlatMap(_, _) | TailRecM(_, _) | Defer(_) | Rep(_, _, _, _) |
-            TokenIn(_, _) | TokensWhile(_, _) | TokensWhile0(_, _) | EmptySlice(_) | SliceP0(_, _) |
-            Index() | GetCaret() | Prod0(_, _) | SoftProd0(_, _) | Map0(_, _) | Select0(_, _) |
+        // the leaves that carry their capture as a construction-time property: with it off the
+        // node already is its own void
+        case Length(_, _, c) => !c
+        case SeqIn(_, _, c) => !c
+        case TokenIn(_, _, c) => !c
+        case TokensWhile(_, _, c) => !c
+        case TokensWhile0(_, _, c) => !c
+        case SliceP(_, _) | Prod(_, _) | SoftProd(_, _) | Map(_, _) | Select(_, _) | FlatMap(_, _) |
+            TailRecM(_, _) | Defer(_) | Rep(_, _, _, _) | EmptySlice(_) | SliceP0(_, _) | Index() |
+            GetCaret() | Prod0(_, _) | SoftProd0(_, _) | Map0(_, _) | Select0(_, _) |
             FlatMap0(_, _) | TailRecM0(_, _) | Defer0(_) | WithSliceP(_, _) | WithSliceP0(_, _) =>
           false
       }
+
+    /** The construction-time half of voiding: rewrite a leaf that carries its capture as a node
+      * property into its non-capturing form, so [[Parser.void]] can hand the leaf back bare instead
+      * of wrapping it in a [[Void]] whose `state.capture` flip the leaf would then have to read
+      * back on every parse. Composite nodes keep the runtime flag: their capture is decided by what
+      * runs under them, not by the node.
+      */
+    def voidLeaf0[S](p: Parser0[S, Any]): Parser0[S, Any] =
+      p match {
+        case leaf: CaptureLeaf[_] => leaf.voided.asInstanceOf[Parser0[S, Any]]
+        case notLeaf => notLeaf
+      }
+
+    /** the [[voidLeaf0]] of a parser known to consume input */
+    def voidLeaf[S](p: Parser[S, Any]): Parser[S, Any] =
+      expect1(voidLeaf0(p))
+
+    /** The inverse of [[voidLeaf0]]: turn a leaf's capture back on, which is what makes
+      * `p.void.slice` build the node `p.slice` builds — a leaf that captures the region it matched
+      * already ''is'' its own slice, and reaching that through a [[SliceP]] would only be slower.
+      */
+    def captureLeaf0[S](p: Parser0[S, Any]): Parser0[S, Any] =
+      p match {
+        case leaf: CaptureLeaf[_] => leaf.captured.asInstanceOf[Parser0[S, Any]]
+        case notLeaf => notLeaf
+      }
+
+    /** the [[captureLeaf0]] of a parser known to consume input */
+    def captureLeaf[S](p: Parser[S, Any]): Parser[S, Any] =
+      expect1(captureLeaf0(p))
 
     def expect1[S, A](p: Parser0[S, A]): Parser[S, A] =
       p match {
@@ -1727,7 +1787,8 @@ object Parser {
             case _ => Defer0(UnmapDefer0(fn))
           }
         case WithContextP0(ctx, p0) => WithContextP0(ctx, unmap0(p0))
-        case StartParser() | EndParser(_) | TokensWhile0(_, _) | TailRecM0(_, _) | FlatMap0(_, _) =>
+        case StartParser() | EndParser(_) | TokensWhile0(_, _, _) | TailRecM0(_, _) |
+            FlatMap0(_, _) =>
           // we can't transform these significantly
           pa
         case Pure(_) | Index() | GetCaret() | EmptySlice(_) =>
@@ -1792,8 +1853,9 @@ object Parser {
           }
         case Rep(p, min, max, _) => Rep(unmap(p), min, max, Accumulator0.unitAccumulator0)
         case WithContextP(ctx, p) => WithContextP(ctx, unmap(p))
-        case TokenIn(_, _) | TokensWhile(_, _) | SeqLit(_, _) | SeqIn(_, _) | IgnoreCase(_) |
-            Fail() | FailWith(_) | Length(_, _) | TailRecM(_, _) | FlatMap(_, _) =>
+        case TokenIn(_, _, _) | TokensWhile(_, _, _) | SeqLit(_, _) | SeqIn(_, _, _) | IgnoreCase(
+              _
+            ) | Fail() | FailWith(_) | Length(_, _, _) | TailRecM(_, _) | FlatMap(_, _) =>
           // we can't transform these significantly
           pa
       }
@@ -1801,6 +1863,29 @@ object Parser {
     //////////////////////////////////////////////////////////////////////
     // Leaves
     //////////////////////////////////////////////////////////////////////
+
+    /** A leaf that matches a region of input and whose capture is a property of the '''node''',
+      * decided at construction, rather than of the running parse. With `capturing` off it returns
+      * `()` instead of the region, which makes it its own void — [[isVoided]] says so, and
+      * [[Parser.void]] then hands it back bare rather than wrapping it in a [[Void]].
+      *
+      * Mixing this in is what puts a leaf in reach of [[voidLeaf0]] and [[captureLeaf0]]; a new
+      * capture-carrying leaf that mixes it in is handled by both without touching either.
+      */
+    sealed trait CaptureLeaf[S] extends Parser0[S, Any] { self: Product =>
+
+      /** whether this node captures the region it matches, rather than discarding it for `()` */
+      def capturing: Boolean
+
+      /** @return this node with `capturing` set to `b` */
+      protected def withCapturing(b: Boolean): CaptureLeaf[S]
+
+      /** @return this node with its capture off, which is what its void is */
+      final def voided: CaptureLeaf[S] = if (capturing) withCapturing(false) else this
+
+      /** @return this node with its capture on, which is what its slice is */
+      final def captured: CaptureLeaf[S] = if (capturing) this else withCapturing(true)
+    }
 
     final case class Pure[S, A](result: A) extends Parser0[S, A] {
       override def parseMut(state: State[S]): A = result
@@ -1884,15 +1969,20 @@ object Parser {
 
     final case class TokenIn[S, T, TS](
         alpha: Alphabet[S] { type Token = T; type TokenSet = TS },
-        set: TS
-    ) extends Parser[S, T] {
+        set: TS,
+        capturing: Boolean = true
+    ) extends Parser[S, T]
+        with CaptureLeaf[S] {
+
+      override protected def withCapturing(b: Boolean): TokenIn[S, T, TS] = copy(capturing = b)
 
       override def parseMut(state: State[S]): T = {
         val offset = state.offset
         if (alpha.matchesAt(set, state.input, offset)) {
           state.offset = offset + 1
           // tokenAt may box, which is why only the capturing path calls it
-          if (state.capture) alpha.tokenAt(state.input, offset)
+          if (!capturing) unitResult.asInstanceOf[T]
+          else if (state.capture) alpha.tokenAt(state.input, offset)
           else null.asInstanceOf[T]
         } else {
           state.error = Eval.later(Chain.fromSeq(alpha.expectSet(offset, set).toList))
@@ -1905,6 +1995,7 @@ object Parser {
         alpha: Alphabet[S] { type TokenSet = TS; type Slice = Sl },
         set: TS,
         min: Int,
+        capturing: Boolean,
         state: State[S]
     ): Sl = {
       val offset = state.offset
@@ -1912,7 +2003,8 @@ object Parser {
       val end = alpha.scanWhile(set, state.input, offset)
       if ((end - offset) >= min) {
         state.offset = end
-        if (state.capture) alpha.slice(state.input, offset, end)
+        if (!capturing) unitResult.asInstanceOf[Sl]
+        else if (state.capture) alpha.slice(state.input, offset, end)
         else null.asInstanceOf[Sl]
       } else {
         state.error = Eval.later(Chain.fromSeq(alpha.expectSet(offset, set).toList))
@@ -1922,23 +2014,39 @@ object Parser {
 
     final case class TokensWhile[S, TS, Sl](
         alpha: Alphabet[S] { type TokenSet = TS; type Slice = Sl },
-        set: TS
-    ) extends Parser[S, Sl] {
-      override def parseMut(state: State[S]): Sl = Impl.scanMut(alpha, set, 1, state)
+        set: TS,
+        capturing: Boolean = true
+    ) extends Parser[S, Sl]
+        with CaptureLeaf[S] {
+
+      override protected def withCapturing(b: Boolean): TokensWhile[S, TS, Sl] =
+        copy(capturing = b)
+
+      override def parseMut(state: State[S]): Sl =
+        Impl.scanMut(alpha, set, min = 1, capturing, state)
     }
 
     final case class TokensWhile0[S, TS, Sl](
         alpha: Alphabet[S] { type TokenSet = TS; type Slice = Sl },
-        set: TS
-    ) extends Parser0[S, Sl] {
+        set: TS,
+        capturing: Boolean = true
+    ) extends Parser0[S, Sl]
+        with CaptureLeaf[S] {
+
+      override protected def withCapturing(b: Boolean): TokensWhile0[S, TS, Sl] =
+        copy(capturing = b)
+
       // a run of zero tokens satisfies min = 0, so this leaf never takes the failure branch
-      override def parseMut(state: State[S]): Sl = Impl.scanMut(alpha, set, 0, state)
+      override def parseMut(state: State[S]): Sl =
+        Impl.scanMut(alpha, set, min = 0, capturing, state)
     }
 
     final case class SeqIn[S, Sl](
         alpha: Alphabet.Aux[S, Sl],
-        sorted: SortedSet[S]
-    ) extends Parser[S, Sl] {
+        sorted: SortedSet[S],
+        capturing: Boolean = true
+    ) extends Parser[S, Sl]
+        with CaptureLeaf[S] {
       require(sorted.size >= 2, s"expected more than two items, found: ${sorted.size}")
       require(
         !sorted.exists(alpha.length(_) == 0),
@@ -1946,6 +2054,18 @@ object Parser {
       )
       private[this] val matcher: SeqMatcher[S] = alpha.seqMatcher(sorted)
       private[this] val alts: List[S] = sorted.toList
+
+      /** This node with its capture the other way round, memoized: voiding the same node twice
+        * hands back the same twin, so a parser sitting in both a capturing and a voided position
+        * costs one extra leaf rather than one per `void`. Memoized here and on no other leaf
+        * because the twin builds its own [[matcher]], which is the only construction-time cost
+        * among the five worth avoiding — flipping a twin ''back'' still builds a third node and a
+        * third matcher, which is `p.void.slice` and rare.
+        */
+      private[this] lazy val flipped: SeqIn[S, Sl] = copy(capturing = !capturing)
+
+      override protected def withCapturing(b: Boolean): SeqIn[S, Sl] =
+        if (b == capturing) this else flipped
 
       override def parseMut(state: State[S]): Sl = {
         val offset = state.offset
@@ -1955,14 +2075,22 @@ object Parser {
           null.asInstanceOf[Sl]
         } else {
           state.offset = end
-          if (state.capture) alpha.slice(state.input, offset, end)
+          if (!capturing) unitResult.asInstanceOf[Sl]
+          else if (state.capture) alpha.slice(state.input, offset, end)
           else null.asInstanceOf[Sl]
         }
       }
     }
 
-    final case class Length[S, Sl](alpha: Alphabet.Aux[S, Sl], len: Int) extends Parser[S, Sl] {
+    final case class Length[S, Sl](
+        alpha: Alphabet.Aux[S, Sl],
+        len: Int,
+        capturing: Boolean = true
+    ) extends Parser[S, Sl]
+        with CaptureLeaf[S] {
       require(len > 0, s"required length > 0, found $len")
+
+      override protected def withCapturing(b: Boolean): Length[S, Sl] = copy(capturing = b)
 
       override def parseMut(state: State[S]): Sl = {
         val offset = state.offset
@@ -1970,7 +2098,9 @@ object Parser {
         val inputLen = alpha.length(state.input)
         if (end <= inputLen) {
           val res =
-            if (state.capture) alpha.slice(state.input, offset, end) else null.asInstanceOf[Sl]
+            if (!capturing) unitResult.asInstanceOf[Sl]
+            else if (state.capture) alpha.slice(state.input, offset, end)
+            else null.asInstanceOf[Sl]
           state.offset = end
           res
         } else {
