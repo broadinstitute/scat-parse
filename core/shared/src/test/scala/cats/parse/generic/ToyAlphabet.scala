@@ -71,9 +71,8 @@ object ByteSeq {
   * tokens. It exists to keep the abstraction honest: anything char-shaped that leaks into the
   * generic machinery fails here.
   */
-object ToyAlphabet extends Alphabet[ByteSeq] {
-
-  final case class ExpectedMask(offset: Int, mask: Int) extends Expectation.OfAlphabet[ByteSeq]
+class ToyAlphabet extends Alphabet[ByteSeq] {
+  import ToyAlphabet.ExpectedMask
 
   type Token = Byte
   type TokenSet = Int // 16-bit mask: bit i set iff token value i is a member
@@ -177,6 +176,16 @@ object ToyAlphabet extends Alphabet[ByteSeq] {
       mask
     }
 
+  def setWhere(p: Byte => Boolean): Option[Int] = {
+    var mask = 0
+    var i = 0
+    while (i < 16) {
+      if (p(i.toByte)) mask |= (1 << i)
+      i += 1
+    }
+    if (mask == 0) None else Some(mask)
+  }
+
   def subsetOf(a: Int, b: Int): Boolean = (a & ~b & 0xffff) == 0
 
   def intersects(a: Int, b: Int): Boolean = (a & b) != 0
@@ -186,4 +195,26 @@ object ToyAlphabet extends Alphabet[ByteSeq] {
       .filter(i => ((set >> i) & 1) != 0)
       .map(i => ByteSeq(i))
       .toList
+}
+
+object ToyAlphabet extends ToyAlphabet {
+  final case class ExpectedMask(offset: Int, mask: Int) extends Expectation.OfAlphabet[ByteSeq]
+}
+
+/** [[ToyAlphabet]] with its two hot-path entry points counted, so a test can hold the bulk-scan
+  * rule honest: a scan of a run must cost one `scanWhile` call and no per-token `matchesAt` calls.
+  */
+final class CountingToyAlphabet extends ToyAlphabet {
+  var scans: Int = 0
+  var probes: Int = 0
+
+  override def scanWhile(set: Int, s: ByteSeq, from: Int): Int = {
+    scans += 1
+    super.scanWhile(set, s, from)
+  }
+
+  override def matchesAt(set: Int, s: ByteSeq, i: Int): Boolean = {
+    probes += 1
+    super.matchesAt(set, s, i)
+  }
 }

@@ -173,6 +173,23 @@ object AlphabetLaws {
     )
   }
 
+  /** `setWhere(p)` holds exactly the tokens satisfying `p`, checked at every position of the sample
+    * input (and empty only when no sampled position satisfies `p`).
+    */
+  def setWhereMembership[S](
+      alpha: Alphabet[S]
+  )(p: alpha.Token => Boolean, s: S): Either[String, Unit] = {
+    val set = alpha.setWhere(p)
+    val bad = (0 until alpha.length(s)).find { i =>
+      val wanted = p(alpha.tokenAt(s, i))
+      set.fold(wanted)(alpha.matchesAt(_, s, i) != wanted)
+    }
+    check(
+      bad.isEmpty,
+      s"setWhere = $set disagrees with the predicate at position ${bad.getOrElse(-1)} of $s"
+    )
+  }
+
   /** `expectSet` reports every expectation at the requested offset. */
   def expectSetOffsets[S](
       alpha: Alphabet[S]

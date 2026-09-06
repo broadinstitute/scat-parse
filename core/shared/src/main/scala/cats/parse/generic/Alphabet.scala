@@ -203,6 +203,16 @@ abstract class Alphabet[S] extends Serializable {
     */
   def pattern(lit: S): List[TokenSet]
 
+  /** The set of the tokens satisfying `p` — the instance enumerates its own token domain, so that
+    * neither the size of that domain nor the type of a token leaks into the generic layer. Backs
+    * `tokenWhere`/`tokensWhile`; called once per parser construction.
+    *
+    * @return
+    *   the set of tokens `t` with `p(t)`, or None if no token satisfies `p` (instances need not
+    *   represent an empty set)
+    */
+  def setWhere(p: Token => Boolean): Option[TokenSet]
+
   /** @return true if every member of `a` is a member of `b` */
   def subsetOf(a: TokenSet, b: TokenSet): Boolean
 

@@ -23,7 +23,8 @@ package cats.parse.generic
 
 import cats.{Order, Show}
 import cats.data.{Chain, NonEmptyList}
-import cats.parse.{BitSetUtil, LocationMap, Parser, RadixNode}
+// cats.parse.Parser is spelled out: the import would be shadowed by generic.Parser on 2.12
+import cats.parse.{BitSetUtil, LocationMap, RadixNode}
 
 import java.util.Arrays
 import scala.annotation.tailrec
@@ -60,7 +61,7 @@ object StringAlphabet extends Alphabet[String] {
     require(cs.nonEmpty, "cannot build an empty CharSet")
     val ary = cs.toArray
     Arrays.sort(ary)
-    new CharSet(ary(0).toInt, BitSetUtil.bitSetFor(ary), Parser.rangesFor(ary))
+    new CharSet(ary(0).toInt, BitSetUtil.bitSetFor(ary), cats.parse.Parser.rangesFor(ary))
   }
 
   //////////////////////////////////////////////////////////////////////
@@ -209,6 +210,15 @@ object StringAlphabet extends Alphabet[String] {
   def pattern(lit: String): List[CharSet] =
     lit.toList.map(c => charSet(c :: Nil))
 
+  def setWhere(p: Char => Boolean): Option[CharSet] = {
+    val cs = p match {
+      // Set extends Char => Boolean, and enumerating it beats sweeping the domain (as charWhere does)
+      case s: Set[_] => s.asInstanceOf[Set[Char]].toSeq
+      case _ => allChars.filter(p)
+    }
+    if (cs.isEmpty) None else Some(charSet(cs))
+  }
+
   def subsetOf(a: CharSet, b: CharSet): Boolean =
     a.ranges.forall { case (lo, hi) =>
       (lo to hi).forall(c => BitSetUtil.isSet(b.bitSet, c.toInt - b.min))
@@ -230,6 +240,9 @@ object StringAlphabet extends Alphabet[String] {
         radix.matchAt(input, offset)
     }
   }
+
+  /** The whole token domain, hoisted the way char's `Impl.allChars` is: `setWhere` sweeps it. */
+  private val allChars: IndexedSeq[Char] = Char.MinValue to Char.MaxValue
 
   private def mergeInRange(irs: List[InRange]): List[InRange] = {
     @tailrec

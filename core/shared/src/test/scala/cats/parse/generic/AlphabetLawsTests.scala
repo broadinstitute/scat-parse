@@ -36,6 +36,7 @@ abstract class AlphabetLawsTests extends ScalaCheckSuite {
 
   def genS: Gen[S]
   def genSet: Gen[alpha.TokenSet]
+  def genToken: Gen[alpha.Token]
 
   /** Non-empty literals (empty literals are excluded by the seqMatcher precondition). */
   def genLit: Gen[S]
@@ -106,6 +107,15 @@ abstract class AlphabetLawsTests extends ScalaCheckSuite {
     }
   }
 
+  property("setWhere holds exactly the tokens satisfying the predicate") {
+    val genPred: Gen[alpha.Token => Boolean] =
+      Gen.listOf(genToken).map(ts => (t: alpha.Token) => ts.contains(t))
+
+    forAll(genPred, genS) { (p, s) =>
+      law(AlphabetLaws.setWhereMembership(alpha)(p, s))
+    }
+  }
+
   property("expectSet reports the requested offset") {
     forAll(Gen.choose(0, 100), genSet) { (offset, set) =>
       law(AlphabetLaws.expectSetOffsets(alpha)(offset, set))
@@ -133,6 +143,7 @@ class StringAlphabetLawsTest extends AlphabetLawsTests {
 
   def genS: Gen[String] = Gen.listOf(genChar).map(_.mkString)
   def genLit: Gen[String] = Gen.nonEmptyListOf(genChar).map(_.mkString)
+  def genToken: Gen[Char] = genChar
   def genSet: Gen[alpha.TokenSet] =
     Gen.nonEmptyListOf(genChar).map(cs => StringAlphabet.charSet(cs))
 }
@@ -142,7 +153,7 @@ class ToyAlphabetLawsTest extends AlphabetLawsTests {
   val alpha: ToyAlphabet.type = ToyAlphabet
 
   // biased toward ambiguous masks, the analogue of the char suite's collision bias
-  private val genToken: Gen[Byte] =
+  def genToken: Gen[Byte] =
     Gen.frequency(
       (3, Gen.oneOf(1, 2, 4, 8).map(_.toByte)), // unambiguous base tokens
       (3, Gen.oneOf(3, 5, 10, 12, 15).map(_.toByte)), // ambiguous masks
