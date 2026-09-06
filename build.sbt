@@ -63,6 +63,17 @@ lazy val core = crossProject(JSPlatform, JVMPlatform, NativePlatform)
     libraryDependencies ++= {
       if (tlIsScala3.value) Nil else Seq("org.scala-lang" % "scala-reflect" % scalaVersion.value)
     },
+    // for the generic.Parser[S, *] cats instances (kind-projector's -P vs Scala 3's native syntax,
+    // which sbt-typelevel enables automatically once it sees the compiler plugin dependency below)
+    libraryDependencies ++= {
+      if (tlIsScala3.value) Nil
+      else
+        Seq(
+          compilerPlugin(
+            "org.typelevel" % "kind-projector" % "0.13.3" cross CrossVersion.full
+          )
+        )
+    },
     mimaBinaryIssueFilters ++= {
       /*
        * It is okay to filter anything in Impl or RadixNode which are private

@@ -127,6 +127,12 @@ abstract class AlphabetLawsTests extends ScalaCheckSuite {
       law(AlphabetLaws.seqMatcherAgreesWithNaive(alpha)(alts, s, offset))
     }
   }
+
+  property("subInput agrees with slice") {
+    forAll(genS, Gen.choose(0, 8), Gen.choose(0, 8)) { (s, from, until) =>
+      law(AlphabetLaws.subInputCoherent(alpha)(s, from, until))
+    }
+  }
 }
 
 class StringAlphabetLawsTest extends AlphabetLawsTests {

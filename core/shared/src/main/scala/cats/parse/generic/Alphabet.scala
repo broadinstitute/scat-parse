@@ -43,6 +43,14 @@ import scala.collection.immutable.SortedSet
   *   - '''Cold error section''': called only when building or rendering parse errors.
   *   - '''Cold optimizer section''': called only at parser construction time.
   *
+  * ==Instance identity==
+  *
+  * Fusion (the `oneOf`/`seqIn` optimizer) recovers the owning instance from the leaves it merges
+  * and checks both sides share one alphabet before applying a cold-set rule (falling back from `eq`
+  * to `equals`). Instances should be a singleton `object` (as [[StringAlphabet]] is) or otherwise
+  * have a lawful `equals`, or fusion across two "equal" instances built independently will silently
+  * not apply.
+  *
   * ==Matching is membership==
   *
   * A parser matches input one position at a time by asking whether the token at that position is a
@@ -175,6 +183,16 @@ abstract class Alphabet[S] extends Serializable {
     *   the token at `s(i)` (requires `0 <= i < length(s)`)
     */
   def tokenAt(s: S, i: Int): Token
+
+  /** Capture the window `[from, until)` of `s` as an `S`, for the rare error case that must carry a
+    * matched sub-input rather than a [[Slice]] (`unary_!`'s [[Expectation.ExpectedFailureAt]]).
+    * Cold-path only. Instances typically implement this exactly as [[slice]], modulo the result
+    * type (char: `substring` either way).
+    *
+    * @return
+    *   the window `[from, until)` of `s`, as an `S`
+    */
+  def subInput(s: S, from: Int, until: Int): S
 
   //////////////////////////////////////////////////////////////////////
   // Cold optimizer section: called only at parser construction time.

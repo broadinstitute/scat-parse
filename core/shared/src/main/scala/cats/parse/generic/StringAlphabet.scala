@@ -190,6 +190,8 @@ object StringAlphabet extends Alphabet[String] {
 
   def tokenAt(s: String, i: Int): Char = s.charAt(i)
 
+  def subInput(s: String, from: Int, until: Int): String = s.substring(from, until)
+
   //////////////////////////////////////////////////////////////////////
   // Cold optimizer section
   //////////////////////////////////////////////////////////////////////

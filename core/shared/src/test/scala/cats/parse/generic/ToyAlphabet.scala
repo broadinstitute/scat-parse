@@ -155,6 +155,8 @@ class ToyAlphabet extends Alphabet[ByteSeq] {
 
   def tokenAt(s: ByteSeq, i: Int): Byte = s.bytes(i)
 
+  def subInput(s: ByteSeq, from: Int, until: Int): ByteSeq = slice(s, from, until)
+
   //////////////////////////////////////////////////////////////////////
   // Cold optimizer section
   //////////////////////////////////////////////////////////////////////

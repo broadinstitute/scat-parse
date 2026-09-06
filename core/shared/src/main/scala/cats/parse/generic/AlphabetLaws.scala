@@ -198,6 +198,24 @@ object AlphabetLaws {
     check(bad.isEmpty, s"expectSet($offset, $set) produced $bad at the wrong offset")
   }
 
+  /** `subInput` agrees with `slice` on content, over the same `S` type (both are the alphabet's
+    * "capture a window" operation, differing only in result type).
+    */
+  def subInputCoherent[S](
+      alpha: Alphabet[S]
+  )(s: S, from: Int, until: Int): Either[String, Unit] = {
+    val fits = (from >= 0) && (from <= until) && (until <= alpha.length(s))
+    if (!fits) Right(())
+    else {
+      val got = alpha.subInput(s, from, until)
+      check(
+        alpha.length(got) == (until - from) && alpha.slice(got, 0, until - from) == alpha
+          .slice(s, from, until),
+        s"subInput($s, $from, $until) = $got disagrees with slice($s, $from, $until)"
+      )
+    }
+  }
+
   /** The instance's `seqMatcher` agrees with the naive longest-match reference
     * ([[SeqMatcher.naive]]) at the sampled offset.
     */
