@@ -64,19 +64,30 @@ private[parse] final class RadixNode(
     * @return
     *   the new offset after a match, or -1
     */
-  def matchAt(str: String, off: Int): Int =
-    matchAtOrNull(str, off) match {
-      case null => -1
-      case nonNull => off + nonNull.length
-    }
+  def matchAt(str: String, off: Int): Int = {
+    // if/eq, not a match on `case null`: scala 2.13 compiles a match with a null literal and a
+    // binder into a String.hashCode switch (2.12 and 3.x emit a bare ifnonnull), and this is the
+    // hot path of every stringIn/seqIn parse
+    val matched = matchAtOrNull(str, off)
+    if (matched eq null) -1 else off + matched.length
+  }
 
   final def matchAtOrNull(str: String, offset: Int): String =
     if ((offset < 0) || (str.length < offset)) null
     else matchAtOrNullLoop(str, offset)
 
-  // loop invariant: 0 <= offset <= str.length
+  /** The match loop itself, callable without going through [[matchAtOrNull]]'s bounds guard: on the
+    * parse hot path every frame between the parser leaf and this loop costs an inline level, and
+    * spending one on a guard the parse loop already establishes pushes `String`'s own accessors out
+    * of the inlined tree (measurably: ~2x on `stringIn(...).void`).
+    *
+    * Callers must hold the loop invariant themselves: 0 <= offset <= str.length.
+    *
+    * @return
+    *   the longest alternative matching at `offset`, or null if none does
+    */
   @tailrec
-  final protected def matchAtOrNullLoop(str: String, offset: Int): String =
+  private[parse] final def matchAtOrNullLoop(str: String, offset: Int): String =
     if (offset < str.length) {
       val c = str.charAt(offset)
       // this is a hash of c

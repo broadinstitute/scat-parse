@@ -275,7 +275,15 @@ object StringAlphabet extends Alphabet[String] {
     val radix = RadixNode.fromSortedStrings(NonEmptyList.fromListUnsafe(alts.toList))
     new SeqMatcher[String] {
       def matchAt(input: String, offset: Int): Int =
-        radix.matchAt(input, offset)
+        // the bound here and then the loop directly, rather than radix.matchAt (which re-checks the
+        // same bound one frame further in): the frames between the parser leaf and the loop are
+        // what decide whether the whole match stays inside the JIT's inline budget, and it does not
+        // survive the two that radix.matchAt costs. `offset >= 0` is SeqMatcher's precondition.
+        if (offset > input.length) -1
+        else {
+          val matched = radix.matchAtOrNullLoop(input, offset)
+          if (matched eq null) -1 else offset + matched.length
+        }
     }
   }
 
