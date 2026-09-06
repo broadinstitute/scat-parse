@@ -37,9 +37,11 @@ import scala.collection.immutable.SortedSet
   * This scaladoc is the normative source for instance authors; run [[AlphabetLaws]] against any new
   * instance as the acceptance suite. The members are grouped in three sections:
   *
-  *   - '''Hot core''': called on every parse step. These methods take and return primitives (or
-  *     `S`/`Slice` values) only — never `Token`, which may box. Bulk operations live on the
-  *     instance so their loops JIT monomorphically.
+  *   - '''Hot core''': called on every parse step. These methods take and return primitives or
+  *     `S`/`Slice` values; the one exception is [[tokenAt]], which is the capture-one-token
+  *     operation and so is reached only where a token parser actually keeps its token. ''Matching''
+  *     never sees a `Token`, which is what lets `Token` box. Bulk operations live on the instance
+  *     so their loops JIT monomorphically.
   *   - '''Cold error section''': called only when building or rendering parse errors.
   *   - '''Cold optimizer section''': called only at parser construction time.
   *
@@ -74,7 +76,7 @@ abstract class Alphabet[S] extends Serializable {
   type Slice
 
   //////////////////////////////////////////////////////////////////////
-  // Hot core: primitives in, primitives out. Called on every parse step.
+  // Hot core: called on every parse step. Primitives in, primitives out -- except tokenAt.
   //////////////////////////////////////////////////////////////////////
 
   /** @return the number of tokens in `s` */
@@ -118,6 +120,19 @@ abstract class Alphabet[S] extends Serializable {
     *   the captured window as a [[Slice]]
     */
   def slice(s: S, from: Int, until: Int): Slice
+
+  /** The token at position `i` of `s` — the single-token analogue of [[slice]], and the only member
+    * of this section that returns a [[Token]].
+    *
+    * On the parse path, but only where a token parser keeps its token: `tokenIn`/`tokenWhere` reach
+    * it when they capture, and a voided or non-capturing one never does. That narrow reach is what
+    * lets `Token` box, and why ''matching'' goes through [[matchesAt]]/[[scanWhile]] instead. The
+    * optimizer and [[AlphabetLaws]] also call it, cold.
+    *
+    * @return
+    *   the token at `s(i)` (requires `0 <= i < length(s)`)
+    */
+  def tokenAt(s: S, i: Int): Token
 
   //////////////////////////////////////////////////////////////////////
   // Cold error section: called only when building or rendering errors.
@@ -173,16 +188,6 @@ abstract class Alphabet[S] extends Serializable {
     val _ = (input, offset, errorMsg)
     None
   }
-
-  /** The token at position `i` of `s`.
-    *
-    * Cold-path only: the returned `Token` may box. Never called by the hot parsing loop; use
-    * [[matchesAt]]/[[scanWhile]] there.
-    *
-    * @return
-    *   the token at `s(i)` (requires `0 <= i < length(s)`)
-    */
-  def tokenAt(s: S, i: Int): Token
 
   /** Capture the window `[from, until)` of `s` as an `S`, for the rare error case that must carry a
     * matched sub-input rather than a [[Slice]] (`unary_!`'s [[Expectation.ExpectedFailureAt]]).
