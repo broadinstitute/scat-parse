@@ -76,3 +76,9 @@ class Qux2Bench extends JmhBenchmarks("qux2.json")
 class Bla25Bench extends JmhBenchmarks("bla25.json")
 class CountriesBench extends JmhBenchmarks("countries.geo.json")
 class Ugh10kBench extends JmhBenchmarks("ugh10k.json")
+
+// Widen the input sample: same shapes, other sizes (ticket 14).
+class Bla2Bench extends JmhBenchmarks("bla2.json")
+class Qux1Bench extends JmhBenchmarks("qux1.json")
+class FooBench extends JmhBenchmarks("foo.json")
+class DkwBench extends JmhBenchmarks("dkw-sample.json")
