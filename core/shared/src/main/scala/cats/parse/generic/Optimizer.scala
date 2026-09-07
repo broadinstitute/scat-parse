@@ -77,14 +77,13 @@ private[parse] object Optimizer {
             if (li.lengthCompare(2) >= 0) merge(Impl.OneOf(li), l1)
             else merge(li.head, l1)
         }
-      case (Impl.TokenIn(a1, s1, c1), Impl.TokenIn(a2, s2, c2))
-          if (c1 == c2) && Impl.sameAlphabet(a1, a2) =>
+      case (Impl.TokenIn(a1, s1), Impl.TokenIn(a2, s2)) if Impl.sameAlphabet(a1, a2) =>
         // both always consume exactly one token, so no longest-match ambiguity can arise and the
         // union needs no guard; s2's TokenSet is path-dependent on a2, but a1 == a2 was just checked
         val fused: Parser[S, a1.Token] =
-          Impl.TokenIn[S, a1.Token, a1.TokenSet](a1, a1.union(s1, s2.asInstanceOf[a1.TokenSet]), c1)
+          Impl.TokenIn[S, a1.Token, a1.TokenSet](a1, a1.union(s1, s2.asInstanceOf[a1.TokenSet]))
         fused.asInstanceOf[Parser[S, A]]
-      case (Impl.TokenIn(a1, s1, _), Impl.SeqLit(_, _) | Impl.SeqIn(_, _, _))
+      case (Impl.TokenIn(a1, s1), Impl.SeqLit(_, _) | Impl.SeqIn(_, _))
           if isUniversal(a1)(s1.asInstanceOf[a1.TokenSet]) =>
         // the universal set matches whenever there is a token at all, so a literal alternative
         // after it is unreachable: if this one fails the input is exhausted and so would that be
@@ -317,7 +316,7 @@ private[parse] object Optimizer {
       if (reuseLeft) Some(left) else None,
       Impl.OneOf(left :: right :: Nil),
       lit => Impl.SeqLit(alpha, lit).asInstanceOf[Parser[S, A]],
-      sorted => Impl.SeqIn(aux, sorted, capturing = false).asInstanceOf[Parser[S, A]]
+      sorted => Impl.Void(Impl.SeqIn(aux, sorted)).asInstanceOf[Parser[S, A]]
     )(ls, rs)
   }
 
@@ -355,14 +354,14 @@ private[parse] object Optimizer {
     }
 
   /** Recognizes a `Parser[S, Unit]` that is one-or-more literal alternatives under one alphabet: a
-    * bare [[Parser.Impl.SeqLit]], or a previously fused non-capturing `SeqIn` (this optimizer's own
+    * bare [[Parser.Impl.SeqLit]], or a previously fused `Void(SeqIn(...))` (this optimizer's own
     * output, re-examined on a later fold step).
     */
   private object UnitLiterals {
     def unapply[S](p: Parser[S, Any]): Option[(Alphabet[S], List[S])] =
       p match {
         case Impl.SeqLit(alpha, lit) => Some((alpha, lit :: Nil))
-        case Impl.SeqIn(alpha, sorted, false) => Some((alpha, sorted.toList))
+        case Impl.Void(Impl.SeqIn(alpha, sorted)) => Some((alpha, sorted.toList))
         case _ => None
       }
   }
@@ -374,7 +373,7 @@ private[parse] object Optimizer {
   private object UnitTokens {
     def unapply[S](p: Parser[S, Any]): Option[(Alphabet[S], List[S])] =
       p match {
-        case Impl.TokenIn(alpha, set, false) =>
+        case Impl.Void(Impl.TokenIn(alpha, set)) =>
           expandSet(alpha)(set.asInstanceOf[alpha.TokenSet]).map((alpha, _))
         case _ => None
       }
@@ -386,7 +385,7 @@ private[parse] object Optimizer {
   private object SliceTokens {
     def unapply[S](p: Parser[S, Any]): Option[(Alphabet[S], List[S])] =
       p match {
-        case Impl.SliceP(alpha, Impl.TokenIn(a2, set, _)) if Impl.sameAlphabet(alpha, a2) =>
+        case Impl.SliceP(alpha, Impl.TokenIn(a2, set)) if Impl.sameAlphabet(alpha, a2) =>
           expandSet(a2)(set.asInstanceOf[a2.TokenSet]).map((alpha, _))
         case _ => None
       }
@@ -400,7 +399,7 @@ private[parse] object Optimizer {
   private object SliceLiterals {
     def unapply[S](p: Parser[S, Any]): Option[(Alphabet[S], List[S])] =
       p match {
-        case Impl.SeqIn(alpha, sorted, true) => Some((alpha, sorted.toList))
+        case Impl.SeqIn(alpha, sorted) => Some((alpha, sorted.toList))
         case Impl.SliceP(alpha, Impl.SeqLit(alpha2, lit)) if Impl.sameAlphabet(alpha, alpha2) =>
           Some((alpha, lit :: Nil))
         case _ => Impl.definiteSlice(p).map { case (alpha, lit) => (alpha, lit :: Nil) }

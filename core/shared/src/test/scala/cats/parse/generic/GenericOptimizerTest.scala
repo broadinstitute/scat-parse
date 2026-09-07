@@ -28,9 +28,7 @@ import org.scalacheck.Prop.forAll
 /** The `oneOf`/`seqIn` fusion optimizer ([[Optimizer]], spec S5.3): structural checks that fusion
   * actually happens where it is safe, the pinned divergent case that must stay unfused, a soundness
   * property against a naive reference over the non-injective [[ToyAlphabet]], and char parity
-  * examples. Construction-time capture (spec S9.2) is checked here too: which node `void` and
-  * `slice` build is a construction-time question, and the answer is what keeps the flip off the
-  * parse path.
+  * examples.
   */
 class GenericOptimizerTest extends ScalaCheckSuite {
 
@@ -169,59 +167,6 @@ class GenericOptimizerTest extends ScalaCheckSuite {
         s"disagreement on input $input"
       )
     }
-  }
-
-  // ---- capture as a construction-time property (spec S9.2) ----
-
-  private def isVoidWrapped(p: Parser0[ByteSeq, Any]): Boolean =
-    p.isInstanceOf[Parser.Impl.Void[_, _]] || p.isInstanceOf[Parser.Impl.Void0[_, _]]
-
-  private val captureLeaves: List[(String, Parser0[ByteSeq, ByteSeq])] =
-    ("seqIn", Parser.seqIn(List(ByteSeq(0x1), ByteSeq(0x2)))) ::
-      ("tokensIn", Parser.tokensIn(ToyAlphabet)(1 << 1)) ::
-      ("tokensIn0", Parser.tokensIn0(ToyAlphabet)(1 << 1)) ::
-      ("length", Parser.length(2)) ::
-      Nil
-
-  test("voiding a region-capturing leaf builds the bare leaf, not a Void around it") {
-    captureLeaves.foreach { case (name, p) =>
-      val v = p.void
-      assert(!isVoidWrapped(v), s"$name.void is still Void-wrapped: $v")
-      assert(v.isInstanceOf[Parser.Impl.CaptureLeaf[_]], s"$name.void is not a leaf: $v")
-      assertEquals(
-        v.asInstanceOf[Parser.Impl.CaptureLeaf[ByteSeq]].capturing,
-        false,
-        s"$name.void still captures"
-      )
-    }
-    // the same for the one the fusion optimizer builds itself
-    val fused = Parser.oneOf(Parser.seq(ByteSeq(0x1)) :: Parser.seq(ByteSeq(0x2)) :: Nil)
-    assert(!isVoidWrapped(fused), s"fused unit alternatives are Void-wrapped: $fused")
-  }
-
-  test("voiding a leaf is idempotent and yields unit without consuming differently") {
-    captureLeaves.foreach { case (name, p) =>
-      assertEquals(p.void.void, p.void, s"$name.void is not idempotent")
-      val input = ByteSeq(0x1, 0x1)
-      assertEquals(
-        p.void.parse(input).map { case (rem, u) => (rem, u: Any) },
-        p.parse(input).map { case (rem, _) => (rem, (): Any) },
-        s"$name.void disagrees with $name on what it consumes"
-      )
-    }
-  }
-
-  test("slicing a voided leaf rebuilds the capturing leaf, so p.void.slice == p.slice") {
-    captureLeaves.foreach { case (name, p) =>
-      assertEquals(p.void.slice, p.slice, s"$name.void.slice is not $name.slice")
-    }
-  }
-
-  test("the voided twin is memoized, so a leaf in both positions does not double per void") {
-    val p = Parser.seqIn(List(ByteSeq(0x1), ByteSeq(0x2)))
-    assert(p.void eq p.void, "seqIn's voided twin is rebuilt per void")
-    // and a capturing and a voided leaf stay distinguishable to the optimizer's dedup
-    assertNotEquals(p.void: Parser0[ByteSeq, Any], p: Parser0[ByteSeq, Any])
   }
 
   test("char differential: a shadowed alternative behaves the same as cats.parse.Parser's merge") {
