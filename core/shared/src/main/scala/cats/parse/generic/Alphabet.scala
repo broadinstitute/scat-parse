@@ -72,6 +72,10 @@ abstract class Alphabet[S] extends Serializable {
 
   /** The type of captured input windows, returned by [[slice]] and by slice-capturing parsers.
     * Instances should give `Slice` a lawful `equals`. The char instance fixes `Slice = String`.
+    *
+    * Must be a reference type: the parse machinery carries "no result" as a null `Slice` — a
+    * non-capturing leaf returns one, and so does [[SeqMatcher.sliceAt]] when nothing matches — so a
+    * value-typed `Slice` would read its zero as a capture.
     */
   type Slice
 

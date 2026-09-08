@@ -234,6 +234,11 @@ object AlphabetLaws {
     * the naive reference says the match consumes — and returns null exactly where the reference
     * finds no match. A matcher handing back the alternative that matched instead of the region
     * fails this under any non-injective alphabet.
+    *
+    * The length check is not implied by the equality one and does not imply it: a wrong capture can
+    * have the right length (the two differ token-wise) or the right length can hide a wrong one.
+    * Both are needed, because `seqIn`'s capturing leaf advances the offset by
+    * [[Alphabet.sliceLength]] of what `sliceAt` returned, and takes the region on the same call.
     */
   def seqMatcherSliceAgrees[S](
       alpha: Alphabet[S]
@@ -250,7 +255,13 @@ object AlphabetLaws {
       check(
         got == expected,
         s"seqMatcher($alts).sliceAt($input, $offset) = $got but the matched region is $expected"
-      )
+      ).flatMap { _ =>
+        check(
+          alpha.sliceLength(got) == (end - offset),
+          s"seqMatcher($alts).sliceAt($input, $offset) = $got has sliceLength " +
+            s"${alpha.sliceLength(got)} but the match consumes ${end - offset} tokens"
+        )
+      }
     }
   }
 
