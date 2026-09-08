@@ -23,11 +23,11 @@ An instance fixes three type members:
 
 and three groups of methods, split by how often they are called:
 
-- **Hot core** — `length`, `matchesAt`, `scanWhile`, `startsWithAt`, `slice`, `tokenAt`. Called on
-  every parse step, so they take and return primitives, `S`, or `Slice`. The exception is `tokenAt`,
-  which captures one token and is the only member that returns a `Token`; a parser reaches it only
-  when it keeps that token, which is why `Token` is allowed to box. Bulk operations such as
-  `scanWhile` live on the instance so their loops compile monomorphically.
+- **Hot core** — `length`, `matchesAt`, `scanWhile`, `startsWithAt`, `slice`, `sliceLength`,
+  `tokenAt`. Called on every parse step, so they take and return primitives, `S`, or `Slice`. The
+  exception is `tokenAt`, which captures one token and is the only member that returns a `Token`; a
+  parser reaches it only when it keeps that token, which is why `Token` is allowed to box. Bulk
+  operations such as `scanWhile` live on the instance so their loops compile monomorphically.
 - **Cold error section** — `expectSet`, `mergeOfAlphabet`, `orderingS`, `orderOfAlphabet`,
   `showOfAlphabet`, `showLiteral`, `renderContext`, `subInput`. Reached only when a parse error is
   built or rendered.
@@ -90,6 +90,8 @@ object CodeAlphabet extends Alphabet[Vector[Int]] {
     (offset >= 0) && ((offset + lit.length) <= s.length) && s.startsWith(lit, offset)
 
   def slice(s: Vector[Int], from: Int, until: Int): Vector[Int] = s.slice(from, until)
+
+  def sliceLength(sl: Vector[Int]): Int = sl.length
 
   // --- cold error section ---
 
@@ -155,7 +157,9 @@ one error case that has to carry a matched sub-input rather than a capture.
 falls back to `literalsOf`, which an instance with an expensive enumeration should override with a
 size test; and `seqMatcher` returns the naive longest-match reference, which is correct but linear
 in the alternatives. An instance can ship without any of them and add them when the shape or the
-profile asks for it.
+profile asks for it. A custom matcher implements only `matchAt`, since `sliceAt` — the capturing
+entry point — has a correct default that slices the input; overriding it pays off only for a
+matcher whose match result already *is* the matched region, as char's radix walk's result is.
 
 `mergeOfAlphabet` returns its argument. Merging is an optimization — the char instance collapses
 adjacent `InRange` cases into one — and an instance is free to skip it. The one hard rule is that

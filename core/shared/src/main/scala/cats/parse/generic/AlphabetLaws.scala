@@ -230,6 +230,45 @@ object AlphabetLaws {
     )
   }
 
+  /** The instance's `seqMatcher` captures the matched '''input region''' — `slice` over the window
+    * the naive reference says the match consumes — and returns null exactly where the reference
+    * finds no match. A matcher handing back the alternative that matched instead of the region
+    * fails this under any non-injective alphabet.
+    */
+  def seqMatcherSliceAgrees[S](
+      alpha: Alphabet[S]
+  )(alts: SortedSet[S], input: S, offset: Int): Either[String, Unit] = {
+    val end = SeqMatcher.naive(alpha, alts).matchAt(input, offset)
+    val got = alpha.seqMatcher(alts).sliceAt(input, offset)
+    if (end < 0)
+      check(
+        got == null,
+        s"seqMatcher($alts).sliceAt($input, $offset) = $got but the naive reference finds no match"
+      )
+    else {
+      val expected = alpha.slice(input, offset, end)
+      check(
+        got == expected,
+        s"seqMatcher($alts).sliceAt($input, $offset) = $got but the matched region is $expected"
+      )
+    }
+  }
+
+  /** `sliceLength` is the token count of the window `slice` captured. */
+  def sliceLengthConsistent[S](
+      alpha: Alphabet[S]
+  )(s: S, from: Int, until: Int): Either[String, Unit] = {
+    val fits = (from >= 0) && (from <= until) && (until <= alpha.length(s))
+    if (!fits) Right(())
+    else {
+      val got = alpha.sliceLength(alpha.slice(s, from, until))
+      check(
+        got == (until - from),
+        s"sliceLength(slice($s, $from, $until)) = $got but the window holds ${until - from} tokens"
+      )
+    }
+  }
+
   private def check(cond: Boolean, msg: => String): Either[String, Unit] =
     if (cond) Right(()) else Left(msg)
 }

@@ -1944,20 +1944,36 @@ object Parser {
         !sorted.exists(alpha.length(_) == 0),
         "an empty literal is not allowed in alternatives"
       )
-      private[this] val matcher: SeqMatcher[S] = alpha.seqMatcher(sorted)
+      private[this] val matcher: SeqMatcher[S, Sl] = alpha.seqMatcher(sorted)
       private[this] val alts: List[S] = sorted.toList
 
-      override def parseMut(state: State[S]): Sl = {
-        val offset = state.offset
-        val end = matcher.matchAt(state.input, offset)
-        if (end < 0) {
-          state.error = Eval.later(Chain.one(Expectation.OneOfSeq(offset, alts)))
-          null.asInstanceOf[Sl]
+      /* Capture decides first, so each mode makes exactly one matcher call: the capturing branch
+       * takes the matched region from the matcher (which for an equality alphabet already holds it
+       * -- see SeqMatcher.sliceAt) and recovers the end offset from its length, rather than
+       * matching for an end offset and then slicing the input again. The voided branch keeps the
+       * offset-only instructions it has always had. */
+      override def parseMut(state: State[S]): Sl =
+        if (state.capture) {
+          val offset = state.offset
+          val sl = matcher.sliceAt(state.input, offset)
+          if (sl == null) failAt(state, offset)
+          else {
+            state.offset = offset + alpha.sliceLength(sl)
+            sl
+          }
         } else {
-          state.offset = end
-          if (state.capture) alpha.slice(state.input, offset, end)
-          else null.asInstanceOf[Sl]
+          val offset = state.offset
+          val end = matcher.matchAt(state.input, offset)
+          if (end < 0) failAt(state, offset)
+          else {
+            state.offset = end
+            null.asInstanceOf[Sl]
+          }
         }
+
+      private[this] def failAt(state: State[S], offset: Int): Sl = {
+        state.error = Eval.later(Chain.one(Expectation.OneOfSeq(offset, alts)))
+        null.asInstanceOf[Sl]
       }
     }
 

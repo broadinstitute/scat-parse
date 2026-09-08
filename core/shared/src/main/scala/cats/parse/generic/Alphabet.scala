@@ -121,6 +121,18 @@ abstract class Alphabet[S] extends Serializable {
     */
   def slice(s: S, from: Int, until: Int): Slice
 
+  /** The number of tokens in a capture — the [[Slice]] analogue of [[length]], and the only member
+    * of this typeclass that ''reads'' a `Slice`.
+    *
+    * On the parse path where a leaf's own bookkeeping needs the width of a capture it did not
+    * choose the bounds of: a capturing `seqIn` advances the offset by this, because
+    * [[SeqMatcher.sliceAt]] hands back the matched region and nothing else carries its end.
+    *
+    * @return
+    *   the number of tokens in `sl`
+    */
+  def sliceLength(sl: Slice): Int
+
   /** The token at position `i` of `s` — the single-token analogue of [[slice]], and the only member
     * of this section that returns a [[Token]].
     *
@@ -266,14 +278,15 @@ abstract class Alphabet[S] extends Serializable {
     }
 
   /** Build the matcher used by multi-literal alternation (`seqIn`). Built cold at parser
-    * construction; the hot side is one [[SeqMatcher.matchAt]] call per attempt. The default is the
-    * naive linear reference ([[SeqMatcher.naive]]); instances override for speed but must agree
-    * with the reference ([[AlphabetLaws]] checks this).
+    * construction; the hot side is one call per attempt — [[SeqMatcher.matchAt]] when the match is
+    * voided, [[SeqMatcher.sliceAt]] when it is captured. The default is the naive linear reference
+    * ([[SeqMatcher.naive]]); instances override for speed but must agree with the reference
+    * ([[AlphabetLaws]] checks both entry points).
     *
     * @return
     *   a longest-match matcher over `alts`
     */
-  def seqMatcher(alts: SortedSet[S]): SeqMatcher[S] =
+  def seqMatcher(alts: SortedSet[S]): SeqMatcher[S, Slice] =
     SeqMatcher.naive(this, alts)
 }
 

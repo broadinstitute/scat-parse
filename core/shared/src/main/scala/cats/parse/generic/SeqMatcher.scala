@@ -29,16 +29,36 @@ import scala.collection.immutable.SortedSet
   * (see [[Alphabet.pattern]]): of all alternatives whose pattern matches at `offset`, the one
   * consuming the most input wins.
   *
+  * There are two hot entry points, one per capture mode of the `seqIn` leaf: [[matchAt]] when the
+  * match is voided, [[sliceAt]] when it is captured. `sliceAt` has a correct default in terms of
+  * `matchAt` and the alphabet, so an instance implements only `matchAt` unless its match result
+  * already ''is'' the captured region (see [[sliceAt]]).
+  *
   * Preconditions (guaranteed by callers in this library): the alternatives are non-empty, no
-  * alternative is an empty literal, and `matchAt` is called with `offset >= 0`.
+  * alternative is an empty literal, and both entry points are called with `offset >= 0`.
   */
-abstract class SeqMatcher[S] extends Serializable {
+abstract class SeqMatcher[S, Sl](protected val alphabet: Alphabet.Aux[S, Sl]) extends Serializable {
 
   /** @return
     *   the end offset (exclusive) of the longest alternative matching in `input` at `offset` (which
     *   must be `>= 0`), or -1 if none matches
     */
   def matchAt(input: S, offset: Int): Int
+
+  /** The capturing analogue of [[matchAt]]: the matched '''input region''', not the alternative
+    * that matched. Under a non-injective alphabet those differ — an IUPAC-style literal `R` matches
+    * an input `A`, and the capture is the input's `A` — so an override may hand back its match
+    * result only when the two coincide, as they do for an equality alphabet whose `Slice` is its
+    * input type (that is why [[StringAlphabet]] overrides this and the default does not).
+    *
+    * @return
+    *   `alphabet.slice` of the region the longest matching alternative consumes at `offset`, or
+    *   null if none matches (exactly when [[matchAt]] returns -1)
+    */
+  def sliceAt(input: S, offset: Int): Sl = {
+    val end = matchAt(input, offset)
+    if (end < 0) null.asInstanceOf[Sl] else alphabet.slice(input, offset, end)
+  }
 }
 
 object SeqMatcher {
@@ -47,8 +67,8 @@ object SeqMatcher {
     * O(alternatives x alternative-length) per attempt. Instances override [[Alphabet.seqMatcher]]
     * only for speed; [[AlphabetLaws]] checks agreement with this reference.
     */
-  def naive[S](alpha: Alphabet[S], alts: SortedSet[S]): SeqMatcher[S] =
-    new SeqMatcher[S] {
+  def naive[S](alpha: Alphabet[S], alts: SortedSet[S]): SeqMatcher[S, alpha.Slice] =
+    new SeqMatcher[S, alpha.Slice](alpha) {
       private[this] val patterns: List[List[alpha.TokenSet]] =
         alts.toList.map(alpha.pattern(_))
 

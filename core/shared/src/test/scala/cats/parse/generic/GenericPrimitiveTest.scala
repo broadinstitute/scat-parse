@@ -92,6 +92,16 @@ class GenericPrimitiveTest extends munit.FunSuite {
     )
   }
 
+  test("a capturing seqIn over the char alphabet returns the matched input region") {
+    // char's matcher hands its match result straight back as the capture (StringAlphabet's
+    // `sliceAt`), which is sound only because a char literal equals the region it matched -- the
+    // twin of the toy pin above. The leaf then derives the end offset from the capture's length, so
+    // parse at a non-zero offset to hold that arithmetic too.
+    val input = "zabcd"
+    val p: Parser[String, String] = Parser.seq("z") *> Parser.seqIn(List("ab", "abc"))
+    assertEquals(p.parse(input), Right(("d", input.substring(1, 4))))
+  }
+
   test("tokensIn scans a run with one scanWhile call and no per-token probes") {
     val counting = new CountingToyAlphabet
     val p = Parser.tokensIn(counting)(regionSet)

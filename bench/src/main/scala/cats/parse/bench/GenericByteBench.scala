@@ -69,6 +69,7 @@ object ByteAlphabet extends Alphabet[Bytes] {
     }
   def slice(s: Bytes, from: Int, until: Int): Bytes =
     new Bytes(Arrays.copyOfRange(s.bytes, from, until))
+  def sliceLength(sl: Bytes): Int = sl.bytes.length
 
   // cold error section
   final case class ExpectedMask(offset: Int, mask: Int) extends Expectation.OfAlphabet[Bytes]

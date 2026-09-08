@@ -126,6 +126,8 @@ object StringAlphabet extends Alphabet[String] {
   def slice(s: String, from: Int, until: Int): String =
     s.substring(from, until)
 
+  def sliceLength(sl: String): Int = sl.length
+
   //////////////////////////////////////////////////////////////////////
   // Cold error section
   //////////////////////////////////////////////////////////////////////
@@ -270,10 +272,10 @@ object StringAlphabet extends Alphabet[String] {
   override def singletonLiteralOf(set: CharSet): Option[String] =
     if (BitSetUtil.isSingleton(set.bitSet)) Some(set.min.toChar.toString) else None
 
-  override def seqMatcher(alts: SortedSet[String]): SeqMatcher[String] = {
+  override def seqMatcher(alts: SortedSet[String]): SeqMatcher[String, String] = {
     require(alts.nonEmpty && !alts.exists(_.isEmpty), "seqMatcher requires non-empty literals")
     val radix = RadixNode.fromSortedStrings(NonEmptyList.fromListUnsafe(alts.toList))
-    new SeqMatcher[String] {
+    new SeqMatcher[String, String](StringAlphabet) {
       def matchAt(input: String, offset: Int): Int =
         // the bound here and then the loop directly, rather than radix.matchAt (which re-checks the
         // same bound one frame further in): the frames between the parser leaf and the loop are
@@ -284,6 +286,13 @@ object StringAlphabet extends Alphabet[String] {
           val matched = radix.matchAtOrNullLoop(input, offset)
           if (matched eq null) -1 else offset + matched.length
         }
+
+      // the literal *is* the matched region here, so the capture costs nothing beyond the match:
+      // char's `pattern` is all singleton sets, so matching is by equality and every char of the
+      // winning alternative equals the input char it matched. The default would substring instead.
+      // Under a non-injective alphabet the two differ, which is why this is the instance's to say.
+      override def sliceAt(input: String, offset: Int): String =
+        if (offset > input.length) null else radix.matchAtOrNullLoop(input, offset)
     }
   }
 

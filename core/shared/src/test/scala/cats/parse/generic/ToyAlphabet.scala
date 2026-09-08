@@ -108,6 +108,8 @@ class ToyAlphabet extends Alphabet[ByteSeq] {
   def slice(s: ByteSeq, from: Int, until: Int): ByteSeq =
     new ByteSeq(Arrays.copyOfRange(s.bytes, from, until))
 
+  def sliceLength(sl: ByteSeq): Int = sl.bytes.length
+
   //////////////////////////////////////////////////////////////////////
   // Cold error section
   //////////////////////////////////////////////////////////////////////

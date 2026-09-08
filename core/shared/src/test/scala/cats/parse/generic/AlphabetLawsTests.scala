@@ -128,6 +128,18 @@ abstract class AlphabetLawsTests extends ScalaCheckSuite {
     }
   }
 
+  property("seqMatcher captures the matched input region") {
+    forAll(genAlts, genS, Gen.choose(0, 8)) { (alts, s, offset) =>
+      law(AlphabetLaws.seqMatcherSliceAgrees(alpha)(alts, s, offset))
+    }
+  }
+
+  property("sliceLength counts the tokens slice captured") {
+    forAll(genS, Gen.choose(0, 8), Gen.choose(0, 8)) { (s, from, until) =>
+      law(AlphabetLaws.sliceLengthConsistent(alpha)(s, from, until))
+    }
+  }
+
   property("subInput agrees with slice") {
     forAll(genS, Gen.choose(0, 8), Gen.choose(0, 8)) { (s, from, until) =>
       law(AlphabetLaws.subInputCoherent(alpha)(s, from, until))
