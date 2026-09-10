@@ -65,9 +65,8 @@ private[parse] final class RadixNode(
     *   the new offset after a match, or -1
     */
   def matchAt(str: String, off: Int): Int = {
-    // if/eq, not a match on `case null`: scala 2.13 compiles a match with a null literal and a
-    // binder into a String.hashCode switch (2.12 and 3.x emit a bare ifnonnull), and this is the
-    // hot path of every stringIn/seqIn parse
+    // if/eq, not a match on `case null`: this is the hot path of every stringIn/seqIn parse, and
+    // 2.13 miscompiles the match -- see https://github.com/scala/bug/issues/13192
     val matched = matchAtOrNull(str, off)
     if (matched eq null) -1 else off + matched.length
   }
