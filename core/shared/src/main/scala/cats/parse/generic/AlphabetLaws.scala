@@ -198,6 +198,24 @@ object AlphabetLaws {
     check(bad.isEmpty, s"expectSet($offset, $set) produced $bad at the wrong offset")
   }
 
+  /** `expectSet` distinguishes different token sets: two sets that are not `==` must not produce
+    * the same expectation list. This is the partial stand-in for "expectSet covers the set" — full
+    * coverage (every member of `set` is describable from the expectation alone) is not checkable
+    * generically over the opaque [[Expectation.OfAlphabet]] branch, since decoding an expectation
+    * back to membership is not part of the `Alphabet` contract. What this law catches is the
+    * failure that actually matters: an instance whose `expectSet` collapses every distinct set to
+    * one constant "expected something" message, which would make every alphabet-specific error
+    * message uninformative. Sound because `TokenSet` is required to have lawful `equals` (spec
+    * S3.5) — char's is canonicalized by `rangesFor` — so `a == b` iff the sets are the same.
+    */
+  def expectSetDistinguishes[S](
+      alpha: Alphabet[S]
+  )(offset: Int, a: alpha.TokenSet, b: alpha.TokenSet): Either[String, Unit] =
+    check(
+      (a == b) || (alpha.expectSet(offset, a) != alpha.expectSet(offset, b)),
+      s"expectSet($offset, _) cannot tell $a from $b"
+    )
+
   /** `subInput` agrees with `slice` on content, over the same `S` type (both are the alphabet's
     * "capture a window" operation, differing only in result type).
     */

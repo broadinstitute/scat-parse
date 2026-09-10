@@ -157,6 +157,13 @@ abstract class Alphabet[S] extends Serializable {
   /** Decompose a failed set-membership test into this instance's expectation cases (subclasses of
     * [[Expectation.OfAlphabet]]). The char instance emits one `InRange` per contiguous range.
     *
+    * [[AlphabetLaws.expectSetDistinguishes]] is the acceptance check for this method, and it is
+    * partial by design: it requires that two different `TokenSet`s never produce the same
+    * expectation list, catching an instance that collapses every set to one constant message. It
+    * does not check that the expectation list, read on its own, names every member of `set` — that
+    * would require decoding an `OfAlphabet` case back to membership, which is not part of this
+    * contract.
+    *
     * @return
     *   the expectations describing `set`, all at `offset`
     */

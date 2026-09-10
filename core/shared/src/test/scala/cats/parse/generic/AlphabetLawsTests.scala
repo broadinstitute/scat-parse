@@ -122,6 +122,12 @@ abstract class AlphabetLawsTests extends ScalaCheckSuite {
     }
   }
 
+  property("expectSet distinguishes different sets") {
+    forAll(Gen.choose(0, 100), genSet, genSet) { (offset, a, b) =>
+      law(AlphabetLaws.expectSetDistinguishes(alpha)(offset, a, b))
+    }
+  }
+
   property("seqMatcher agrees with the naive longest-match reference") {
     forAll(genAlts, genS, Gen.choose(0, 8)) { (alts, s, offset) =>
       law(AlphabetLaws.seqMatcherAgreesWithNaive(alpha)(alts, s, offset))
